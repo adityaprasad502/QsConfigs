@@ -87,7 +87,7 @@ Singleton {
 
     function processNotificationBody(body, appName) {
         let processedBody = body
-        
+
         // Clean Chromium-based browsers notifications - remove first line
         if (appName) {
             const lowerApp = appName.toLowerCase()
@@ -104,8 +104,27 @@ Singleton {
             }
         }
 
+        // Decode common HTML entities so we work with real characters
+        processedBody = processedBody
+            .replace(/&amp;/gi,  '&')
+            .replace(/&lt;/gi,   '\x00LT\x00')   // temp-protect real < we want to keep
+            .replace(/&gt;/gi,   '\x00GT\x00')
+            .replace(/&quot;/gi, '"')
+            .replace(/&apos;/gi, "'")
+            .replace(/&#39;/gi,  "'")
+            .replace(/&nbsp;/gi, ' ');
+
+        // Add spacing before <img> so it sits on its own line
         processedBody = processedBody.replace(/<img/gi, '\n\n<img');
-        
+
+        // Strip tags not supported by Qt RichText (b, i, u, a, img, br only)
+        // Unsupported tags render as literal text in Qt's RichText engine
+        processedBody = processedBody.replace(/<(?!\/?(?:b|i|u|a|br|img)\b)[^>]*>/gi, '');
+
+        // Re-escape any stray < > that aren't part of our allowed tags
+        // so Qt's HTML parser never encounters malformed HTML and falls back to plain text
+        processedBody = processedBody.replace(/\x00LT\x00/g, '&lt;').replace(/\x00GT\x00/g, '&gt;');
+
         return processedBody
     }
 }

@@ -174,7 +174,7 @@ Item { // Notification item area
                     maximumLineCount: 1
                     textFormat: Text.StyledText
                     text: {
-return notificationObject.appName === "KDE Connect" ? "yet another notification" : NotificationUtils.processNotificationBody(notificationObject.body, notificationObject.appName || notificationObject.summary).replace(/\n/g, "<br/>");
+return notificationObject.appName === "KDE Connect" ? "yet another notification" : NotificationUtils.processNotificationBody(notificationObject.body, notificationObject.appName || notificationObject.summary).replace(/\n/g, " · ");
                     }
                 }
             }
