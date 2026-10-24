@@ -19,6 +19,8 @@ Singleton {
     property bool loading: false
     property string loadingStatus: ""
     property string currentLyricLine: ""
+    property string currentLyricLineRich: ""
+    property int currentGroupStartIdx: -1
     property string nextLyricLine: ""
     property var lyricLines: [] // Array of { time: seconds, text: string }
     property var lyricGroupIndex: [] // Precomputed group for each line index
@@ -30,6 +32,16 @@ Singleton {
 
     property real lastKnownPosition: 0
     property real lastKnownTimestamp: 0
+    property real syncLeadSeconds: 0.25 // Lead time in seconds (switches to next line slightly earlier)
+
+    // Precomputed lyric style colors: reactive to theme/wallpaper changes, evaluated once (0 overhead in 200ms tick)
+    readonly property string colPastHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.35).toString()
+    readonly property string colUpcomingHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
+    readonly property string colActiveHex: (Appearance?.colors?.colSubtext ?? "#948f94").toString()
+    readonly property string colBulletHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.40).toString()
+    readonly property string colTimerHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
+    readonly property string colWaitingGroupHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
+    readonly property string colWaitingSingleHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.75).toString()
 
     function normalizeStr(s) {
         if (!s) return "";
@@ -106,6 +118,8 @@ Singleton {
             root.lyricGroupIndex = [];
             root.hasUnsyncedLyrics = false;
             root.currentLyricLine = "";
+            root.currentLyricLineRich = "";
+            root.currentGroupStartIdx = -1;
             root.nextLyricLine = "";
             root.loading = false;
             root.loadingStatus = "";
@@ -116,6 +130,8 @@ Singleton {
         root.lyricLines = [];
         root.lyricGroupIndex = [];
         root.currentLyricLine = "";
+        root.currentLyricLineRich = "";
+        root.currentGroupStartIdx = -1;
         root.nextLyricLine = "";
         root.hasUnsyncedLyrics = false;
 
@@ -253,6 +269,8 @@ Singleton {
                 root.lyricGroupIndex = [];
                 root.hasUnsyncedLyrics = false;
                 root.currentLyricLine = "";
+                root.currentLyricLineRich = "";
+                root.currentGroupStartIdx = -1;
                 root.nextLyricLine = "";
             }
         }
@@ -295,28 +313,53 @@ Singleton {
         }
         let maxAllowedPx = Math.max(140, (GlobalStates?.topBarMediaWidth ?? 440) - 150);
         root.lastGroupWidth = maxAllowedPx;
+
+        // Leave a generous safety margin (approx 20% or 45px) so groups never trigger a marquee,
+        // even when repeat counters (x2), gap countdowns (♪ 5s), or dynamic workspace layout expansion occur.
+        let targetWidthPx = Math.max(120, Math.min(maxAllowedPx * 0.80, maxAllowedPx - 45));
+
+        function isLineRepeat(k) {
+            if (k < 0 || k >= lines.length) return false;
+            let txt = lines[k].text;
+            if (txt === "♪") return false;
+            return (k > 0 && lines[k - 1].text === txt) || (k + 1 < lines.length && lines[k + 1].text === txt);
+        }
+
         let index = [];
         let i = 0;
         while (i < lines.length) {
             let start = i;
             let groupText = lines[i].text;
-            let currentPx = root.measurePixelWidth(groupText);
             let j = i + 1;
 
-            if (currentPx < maxAllowedPx * 0.65) {
+            // Never group instrumental markers or lines belonging to a repeat series
+            if (groupText !== "♪" && !isLineRepeat(i)) {
                 while (j < lines.length) {
                     let nextText = lines[j].text;
-                    let candidateText = groupText + " • " + nextText;
-                    let candidatePx = root.measurePixelWidth(candidateText);
+
+                    // Stop if next item is an instrumental pause or repeat sequence
+                    if (nextText === "♪" || isLineRepeat(j)) break;
+
                     let gap = lines[j].time - lines[j - 1].time;
                     let totalSpan = lines[j].time - lines[start].time;
-                    if (gap <= 3.4 && totalSpan <= 7.0 && candidatePx <= maxAllowedPx && nextText !== "♪" && groupText !== "♪" && nextText !== lines[j - 1].text) {
-                        groupText = candidateText;
-                        currentPx = candidatePx;
-                        j++;
-                    } else {
-                        break;
-                    }
+
+                    // Cadence / Stanza break check:
+                    // Gaps > 4.8s mark a distinct pause or stanza transition
+                    if (gap > 4.8 || totalSpan > 9.5) break;
+
+                    // Couplets (2 lines) by default; allow triplets (3 lines) only for very short phrases (< 18 chars)
+                    let count = (j - start) + 1;
+                    let isShortGroup = groupText.length < 18 && nextText.length < 18;
+                    let maxLines = isShortGroup ? 3 : 2;
+                    if (count > maxLines) break;
+
+                    // Width check with actual font rendering
+                    let candidateText = groupText + " • " + nextText;
+                    let candidatePx = root.measurePixelWidth(candidateText);
+                    if (candidatePx > targetWidthPx) break;
+
+                    groupText = candidateText;
+                    j++;
                 }
             }
 
@@ -362,7 +405,7 @@ Singleton {
             }
 
             let currentPos = root.lastKnownPosition + elapsedSec;
-            let audioSyncPos = Math.max(0, currentPos - 0.3);
+            let audioSyncPos = Math.max(0, currentPos + root.syncLeadSeconds);
 
             let lines = root.lyricLines;
             let groups = root.lyricGroupIndex;
@@ -379,14 +422,37 @@ Singleton {
             }
 
             let newCurrentLine = "";
+            let newCurrentLineRich = "";
             let newNextLine = "";
+            let newGroupStartIdx = -1;
 
             if (currIdx >= 0) {
                 let currGroup = groups[currIdx];
                 let baseText = currGroup.text;
 
+                // Sub-line split fade for multi-line groups
+                let baseTextRich = "";
+                if (currGroup.startIdx < currGroup.endIdx) {
+                    let parts = [];
+                    for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
+                        let lineText = lines[m].text;
+                        if (m < currIdx) {
+                            parts.push(`<font color="${root.colPastHex}">${lineText}</font>`);
+                        } else if (m === currIdx) {
+                            parts.push(`<font color="${root.colActiveHex}">${lineText}</font>`);
+                        } else {
+                            parts.push(`<font color="${root.colUpcomingHex}">${lineText}</font>`);
+                        }
+                    }
+                    baseTextRich = parts.join(`<font color="${root.colBulletHex}"> • </font>`);
+                } else {
+                    baseTextRich = `<font color="${root.colActiveHex}">${baseText}</font>`;
+                }
+
                 let identicalCount = 1;
                 let rawGroupText = lines[currGroup.startIdx].text;
+                let repeatSeriesStart = currGroup.startIdx;
+
                 if (rawGroupText !== "♪") {
                     for (let k = currGroup.endIdx + 1; k < lines.length; k++) {
                         if (lines[k].text === rawGroupText) {
@@ -395,7 +461,19 @@ Singleton {
                             break;
                         }
                     }
+
+                    // Walk backwards to find the origin of this repeated line
+                    for (let p = currGroup.startIdx - 1; p >= 0; p--) {
+                        if (lines[p].text === rawGroupText) {
+                            repeatSeriesStart = p;
+                        } else {
+                            break;
+                        }
+                    }
                 }
+
+                // If this is part of a repeated sequence, bind group key to series origin
+                newGroupStartIdx = repeatSeriesStart;
 
                 // Detect if this is the last repeat in a series → show (x1)
                 // Only applies to single-line groups — joined groups are never a repeat tail
@@ -406,6 +484,7 @@ Singleton {
 
                 if (identicalCount > 1 || isLastOfSeries) {
                     baseText = `${baseText} (x${identicalCount})`;
+                    baseTextRich = `${baseTextRich} <font color="${root.colTimerHex}">(x${identicalCount})</font>`;
                 }
 
                 let hasNextGroup = currGroup.nextStartIdx < lines.length;
@@ -428,20 +507,29 @@ Singleton {
                         }
                         if (remaining > 0) {
                             newCurrentLine = prevText ? `${prevText} (♪ ${remaining}s)` : `♪ ${remaining}s`;
+                            newCurrentLineRich = prevText ? `<font color="${root.colTimerHex}">${prevText}</font> (♪ ${remaining}s)` : `♪ ${remaining}s`;
                         } else {
                             // Timer done but next lyric not yet — hold the previous text
                             newCurrentLine = prevText || "";
+                            newCurrentLineRich = prevText ? `<font color="${root.colTimerHex}">${prevText}</font>` : "";
                         }
                     } else if (remaining > 0) {
                         let gap = nextTime - lines[currGroup.endIdx].time;
                         let timeSinceStart = audioSyncPos - lines[currGroup.endIdx].time;
                         if (gap > 7.0 && timeSinceStart > 4.0) {
                             newCurrentLine = `${baseText} (♪ ${remaining}s)`;
+                            // Line has ended and is waiting in gap countdown: remove boldness and soften past line
+                            let waitingHex = (currGroup.startIdx < currGroup.endIdx)
+                                ? root.colWaitingGroupHex
+                                : root.colWaitingSingleHex;
+                            newCurrentLineRich = `<font color="${waitingHex}">${baseText}</font> <font color="${root.colTimerHex}">(♪ ${remaining}s)</font>`;
                         } else {
                             newCurrentLine = baseText;
+                            newCurrentLineRich = baseTextRich;
                         }
                     } else {
                         newCurrentLine = baseText;
+                        newCurrentLineRich = baseTextRich;
                     }
                 } else {
                     let trackLen = activePlayer?.length || 0;
@@ -452,8 +540,10 @@ Singleton {
 
                     if (trackLen > 0 && remainingInTrack > 10.0) {
                         newCurrentLine = baseInfo ? `${baseInfo} (Outro)` : "Outro";
+                        newCurrentLineRich = newCurrentLine;
                     } else if (baseText !== "♪") {
                         newCurrentLine = baseText;
+                        newCurrentLineRich = baseTextRich;
                     } else {
                         // Walk backwards past all consecutive ♪ to find the last real lyric
                         let lastReal = "";
@@ -461,6 +551,7 @@ Singleton {
                             if (lines[r].text !== "♪") { lastReal = lines[r].text; break; }
                         }
                         newCurrentLine = lastReal;
+                        newCurrentLineRich = lastReal ? `<font color="${root.colTimerHex}">${lastReal}</font>` : "";
                     }
                 }
             } else if (lines.length > 0) {
@@ -476,10 +567,13 @@ Singleton {
                     } else {
                         newCurrentLine = `(Intro ♪ ${remaining}s)`;
                     }
+                    newCurrentLineRich = newCurrentLine;
                 }
             }
 
             if (root.currentLyricLine !== newCurrentLine) root.currentLyricLine = newCurrentLine;
+            if (root.currentLyricLineRich !== newCurrentLineRich) root.currentLyricLineRich = newCurrentLineRich;
+            if (root.currentGroupStartIdx !== newGroupStartIdx) root.currentGroupStartIdx = newGroupStartIdx;
             if (root.nextLyricLine !== newNextLine) root.nextLyricLine = newNextLine;
         }
     }

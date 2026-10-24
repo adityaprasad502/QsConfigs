@@ -212,7 +212,7 @@ Item {
                     return "Everything happens for a reason";
                 }
                 if (root.hasLyrics) {
-                    return LyricsService.currentLyricLine;
+                    return LyricsService.currentLyricLineRich || LyricsService.currentLyricLine;
                 }
                 let artistStr = activePlayer?.trackArtist || "";
                 let baseInfo = `${cleanedTitle}${artistStr ? ' • ' + artistStr : ''}`;
@@ -251,14 +251,14 @@ Item {
 
                 StyledText {
                     id: topBarMusicText
-                    textFormat: Text.PlainText
+                    textFormat: root.hasLyrics ? Text.StyledText : Text.PlainText
                     color: Appearance.colors.colSubtext
                     text: topBarTextContainer.displayText
                 }
 
                 StyledText {
                     visible: topBarTextContainer.isOverflowing && topBarMarqueeAnim.running
-                    textFormat: Text.PlainText
+                    textFormat: root.hasLyrics ? Text.StyledText : Text.PlainText
                     color: Appearance.colors.colSubtext
                     text: topBarTextContainer.displayText
                 }
