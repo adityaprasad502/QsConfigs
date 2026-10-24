@@ -43,6 +43,17 @@ Singleton {
     readonly property string colWaitingGroupHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
     readonly property string colWaitingSingleHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.75).toString()
 
+    function getTrackBaseInfo() {
+        let rawTitle = activePlayer?.trackTitle || "";
+        let tName = StringUtils.cleanMusicTitle(rawTitle) || rawTitle;
+        let tArtist = activePlayer?.trackArtist || "";
+        let plain = (tName && tArtist) ? `${tName} • ${tArtist}` : (tName || tArtist);
+        let rich = (tName && tArtist)
+            ? `<font color="${root.colActiveHex}">${tName}</font><font color="${root.colBulletHex}"> • </font><font color="${root.colActiveHex}">${tArtist}</font>`
+            : `<font color="${root.colActiveHex}">${tName || tArtist}</font>`;
+        return { plain: plain, rich: rich };
+    }
+
     function normalizeStr(s) {
         if (!s) return "";
         return String(s).toLowerCase().replace(/[\s\-_''"".,:\;!?()\[\]{}\//\\&+=#@~`^|<>*]/g, "");
@@ -311,12 +322,8 @@ Singleton {
             root.lyricGroupIndex = [];
             return;
         }
-        let maxAllowedPx = Math.max(140, (GlobalStates?.topBarMediaWidth ?? 440) - 150);
+        let maxAllowedPx = Math.max(160, (GlobalStates?.topBarMediaWidth ?? 440) - 135);
         root.lastGroupWidth = maxAllowedPx;
-
-        // Leave a generous safety margin (approx 20% or 45px) so groups never trigger a marquee,
-        // even when repeat counters (x2), gap countdowns (♪ 5s), or dynamic workspace layout expansion occur.
-        let targetWidthPx = Math.max(120, Math.min(maxAllowedPx * 0.80, maxAllowedPx - 45));
 
         function isLineRepeat(k) {
             if (k < 0 || k >= lines.length) return false;
@@ -345,18 +352,21 @@ Singleton {
 
                     // Cadence / Stanza break check:
                     // Gaps > 4.8s mark a distinct pause or stanza transition
-                    if (gap > 4.8 || totalSpan > 9.5) break;
+                    if (gap > 4.8 || totalSpan > 11.0) break;
 
-                    // Couplets (2 lines) by default; allow triplets (3 lines) only for very short phrases (< 18 chars)
+                    // Allow up to 3 lines (triplets) whenever they fit comfortably in the bar width
                     let count = (j - start) + 1;
-                    let isShortGroup = groupText.length < 18 && nextText.length < 18;
-                    let maxLines = isShortGroup ? 3 : 2;
-                    if (count > maxLines) break;
+                    if (count > 3) break;
+
+                    // Dynamic reserve: if candidate line j is followed by an instrumental gap (> 7s or ♪),
+                    // reserve extra width (~65px) for the upcoming (♪ Xs) countdown timer so it never marquees.
+                    let hasTimer = (j + 1 < lines.length) && (lines[j + 1].time - lines[j].time > 7.0 || lines[j + 1].text === "♪");
+                    let reserve = hasTimer ? 65 : 20;
 
                     // Width check with actual font rendering
                     let candidateText = groupText + " • " + nextText;
                     let candidatePx = root.measurePixelWidth(candidateText);
-                    if (candidatePx > targetWidthPx) break;
+                    if (candidatePx > maxAllowedPx - reserve) break;
 
                     groupText = candidateText;
                     j++;
@@ -449,11 +459,13 @@ Singleton {
                     baseTextRich = `<font color="${root.colActiveHex}">${baseText}</font>`;
                 }
 
+                let isSingleLine = currGroup.startIdx === currGroup.endIdx;
                 let identicalCount = 1;
                 let rawGroupText = lines[currGroup.startIdx].text;
                 let repeatSeriesStart = currGroup.startIdx;
 
-                if (rawGroupText !== "♪") {
+                // Repeat multipliers (x2, x3) only apply to consecutive repeats of a single line
+                if (isSingleLine && rawGroupText !== "♪") {
                     for (let k = currGroup.endIdx + 1; k < lines.length; k++) {
                         if (lines[k].text === rawGroupText) {
                             identicalCount++;
@@ -477,8 +489,8 @@ Singleton {
 
                 // Detect if this is the last repeat in a series → show (x1)
                 // Only applies to single-line groups — joined groups are never a repeat tail
-                let isLastOfSeries = identicalCount === 1
-                    && currGroup.startIdx === currGroup.endIdx
+                let isLastOfSeries = isSingleLine
+                    && identicalCount === 1
                     && currGroup.startIdx > 0
                     && lines[currGroup.startIdx - 1].text === rawGroupText;
 
@@ -506,12 +518,29 @@ Singleton {
                             }
                         }
                         if (remaining > 0) {
-                            newCurrentLine = prevText ? `${prevText} (♪ ${remaining}s)` : `♪ ${remaining}s`;
-                            newCurrentLineRich = prevText ? `<font color="${root.colTimerHex}">${prevText}</font> (♪ ${remaining}s)` : `♪ ${remaining}s`;
+                            if (prevText) {
+                                newCurrentLine = `${prevText} (♪ ${remaining}s)`;
+                                newCurrentLineRich = `<font color="${root.colWaitingSingleHex}">${prevText}</font> <font color="${root.colTimerHex}">(♪ ${remaining}s)</font>`;
+                            } else {
+                                let trackInfo = root.getTrackBaseInfo();
+                                if (trackInfo.plain) {
+                                    newCurrentLine = `${trackInfo.plain} (Intro ♪ ${remaining}s)`;
+                                    newCurrentLineRich = `${trackInfo.rich} <font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
+                                } else {
+                                    newCurrentLine = `(Intro ♪ ${remaining}s)`;
+                                    newCurrentLineRich = `<font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
+                                }
+                            }
                         } else {
-                            // Timer done but next lyric not yet — hold the previous text
-                            newCurrentLine = prevText || "";
-                            newCurrentLineRich = prevText ? `<font color="${root.colTimerHex}">${prevText}</font>` : "";
+                            // Timer done but next lyric not yet — hold the previous text or track info
+                            if (prevText) {
+                                newCurrentLine = prevText;
+                                newCurrentLineRich = `<font color="${root.colWaitingSingleHex}">${prevText}</font>`;
+                            } else {
+                                let trackInfo = root.getTrackBaseInfo();
+                                newCurrentLine = trackInfo.plain || "";
+                                newCurrentLineRich = trackInfo.rich || "";
+                            }
                         }
                     } else if (remaining > 0) {
                         let gap = nextTime - lines[currGroup.endIdx].time;
@@ -534,13 +563,13 @@ Singleton {
                 } else {
                     let trackLen = activePlayer?.length || 0;
                     let remainingInTrack = Math.max(0, Math.ceil(trackLen - audioSyncPos));
-                    let tName = activePlayer?.trackTitle || "";
-                    let tArtist = activePlayer?.trackArtist || "";
-                    let baseInfo = tArtist ? `${tName} ${tArtist}` : tName;
+                    let trackInfo = root.getTrackBaseInfo();
 
                     if (trackLen > 0 && remainingInTrack > 10.0) {
-                        newCurrentLine = baseInfo ? `${baseInfo} (Outro)` : "Outro";
-                        newCurrentLineRich = newCurrentLine;
+                        newCurrentLine = trackInfo.plain ? `${trackInfo.plain} (Outro)` : "Outro";
+                        newCurrentLineRich = trackInfo.plain
+                            ? `${trackInfo.rich} <font color="${root.colTimerHex}">(Outro)</font>`
+                            : `<font color="${root.colTimerHex}">Outro</font>`;
                     } else if (baseText !== "♪") {
                         newCurrentLine = baseText;
                         newCurrentLineRich = baseTextRich;
@@ -550,24 +579,31 @@ Singleton {
                         for (let r = currGroup.startIdx - 1; r >= 0; r--) {
                             if (lines[r].text !== "♪") { lastReal = lines[r].text; break; }
                         }
-                        newCurrentLine = lastReal;
-                        newCurrentLineRich = lastReal ? `<font color="${root.colTimerHex}">${lastReal}</font>` : "";
+                        if (lastReal) {
+                            newCurrentLine = lastReal;
+                            newCurrentLineRich = `<font color="${root.colWaitingSingleHex}">${lastReal}</font>`;
+                        } else {
+                            newCurrentLine = trackInfo.plain || "";
+                            newCurrentLineRich = trackInfo.rich || "";
+                        }
                     }
                 }
             } else if (lines.length > 0) {
                 let firstGroup = groups[0];
                 newNextLine = firstGroup.text;
                 let remaining = Math.max(0, Math.ceil(lines[0].time - audioSyncPos));
-                if (remaining > 0 && remaining < 60) {
-                    let tName = activePlayer?.trackTitle || "";
-                    let tArtist = activePlayer?.trackArtist || "";
-                    let baseInfo = tArtist ? `${tName} ${tArtist}` : tName;
-                    if (baseInfo) {
-                        newCurrentLine = `${baseInfo} (Intro ♪ ${remaining}s)`;
+                let trackInfo = root.getTrackBaseInfo();
+                if (remaining > 0) {
+                    if (trackInfo.plain) {
+                        newCurrentLine = `${trackInfo.plain} (Intro ♪ ${remaining}s)`;
+                        newCurrentLineRich = `${trackInfo.rich} <font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
                     } else {
                         newCurrentLine = `(Intro ♪ ${remaining}s)`;
+                        newCurrentLineRich = `<font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
                     }
-                    newCurrentLineRich = newCurrentLine;
+                } else {
+                    newCurrentLine = trackInfo.plain || "";
+                    newCurrentLineRich = trackInfo.rich || "";
                 }
             }
 
