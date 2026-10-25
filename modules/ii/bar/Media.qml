@@ -35,7 +35,7 @@ Item {
     readonly property bool isPlaying: activePlayer?.playbackState === MprisPlaybackState.Playing
     readonly property bool isPaused: activePlayer != null && !root.isPlaying
     readonly property bool hasMedia: activePlayer != null && (root.isPlaying || (StringUtils.cleanMusicTitle(activePlayer?.trackTitle) || "") !== "")
-    readonly property bool hasLyrics: root.isPlaying && LyricsService.currentLyricLine && LyricsService.currentLyricLine.length > 0
+    readonly property bool hasLyrics: root.hasMedia && LyricsService.currentLyricLine && LyricsService.currentLyricLine.length > 0
     readonly property bool isLive: {
         if (!activePlayer || !root.hasMedia) return false;
         let len = activePlayer?.length || 0;

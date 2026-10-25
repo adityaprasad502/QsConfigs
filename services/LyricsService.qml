@@ -43,15 +43,20 @@ Singleton {
     readonly property string colWaitingGroupHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
     readonly property string colWaitingSingleHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.75).toString()
 
-    function getTrackBaseInfo() {
+    // Precomputed track title + artist strings: reactive to track/theme changes, zero overhead in 200ms tick
+    readonly property string trackInfoPlain: {
         let rawTitle = activePlayer?.trackTitle || "";
         let tName = StringUtils.cleanMusicTitle(rawTitle) || rawTitle;
         let tArtist = activePlayer?.trackArtist || "";
-        let plain = (tName && tArtist) ? `${tName} • ${tArtist}` : (tName || tArtist);
-        let rich = (tName && tArtist)
+        return (tName && tArtist) ? `${tName} • ${tArtist}` : (tName || tArtist);
+    }
+    readonly property string trackInfoRich: {
+        let rawTitle = activePlayer?.trackTitle || "";
+        let tName = StringUtils.cleanMusicTitle(rawTitle) || rawTitle;
+        let tArtist = activePlayer?.trackArtist || "";
+        return (tName && tArtist)
             ? `<font color="${root.colActiveHex}">${tName}</font><font color="${root.colBulletHex}"> • </font><font color="${root.colActiveHex}">${tArtist}</font>`
             : `<font color="${root.colActiveHex}">${tName || tArtist}</font>`;
-        return { plain: plain, rich: rich };
     }
 
     function normalizeStr(s) {
@@ -511,21 +516,26 @@ Singleton {
                     if (currGroup.text === "♪") {
                         // Walk backwards past all consecutive ♪ to find the real previous lyric
                         let prevText = "";
+                        let prevGroupIdx = -1;
                         for (let p = currGroup.startIdx - 1; p >= 0; p--) {
                             if (lines[p].text !== "♪") {
                                 prevText = groups[p].text;
+                                prevGroupIdx = p;
                                 break;
                             }
                         }
+                        // Use the correct waiting color: muted-group for couplets/triplets, muted-single for solo lines
+                        let prevWaitingHex = (prevGroupIdx >= 0 && groups[prevGroupIdx].startIdx < groups[prevGroupIdx].endIdx)
+                            ? root.colWaitingGroupHex
+                            : root.colWaitingSingleHex;
                         if (remaining > 0) {
                             if (prevText) {
                                 newCurrentLine = `${prevText} (♪ ${remaining}s)`;
-                                newCurrentLineRich = `<font color="${root.colWaitingSingleHex}">${prevText}</font> <font color="${root.colTimerHex}">(♪ ${remaining}s)</font>`;
+                                newCurrentLineRich = `<font color="${prevWaitingHex}">${prevText}</font> <font color="${root.colTimerHex}">(♪ ${remaining}s)</font>`;
                             } else {
-                                let trackInfo = root.getTrackBaseInfo();
-                                if (trackInfo.plain) {
-                                    newCurrentLine = `${trackInfo.plain} (Intro ♪ ${remaining}s)`;
-                                    newCurrentLineRich = `${trackInfo.rich} <font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
+                                if (root.trackInfoPlain) {
+                                    newCurrentLine = `${root.trackInfoPlain} (Intro ♪ ${remaining}s)`;
+                                    newCurrentLineRich = `${root.trackInfoRich} <font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
                                 } else {
                                     newCurrentLine = `(Intro ♪ ${remaining}s)`;
                                     newCurrentLineRich = `<font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
@@ -535,56 +545,88 @@ Singleton {
                             // Timer done but next lyric not yet — hold the previous text or track info
                             if (prevText) {
                                 newCurrentLine = prevText;
-                                newCurrentLineRich = `<font color="${root.colWaitingSingleHex}">${prevText}</font>`;
+                                newCurrentLineRich = `<font color="${prevWaitingHex}">${prevText}</font>`;
                             } else {
-                                let trackInfo = root.getTrackBaseInfo();
-                                newCurrentLine = trackInfo.plain || "";
-                                newCurrentLineRich = trackInfo.rich || "";
+                                newCurrentLine = root.trackInfoPlain || "";
+                                newCurrentLineRich = root.trackInfoRich || "";
                             }
                         }
                     } else if (remaining > 0) {
                         let gap = nextTime - lines[currGroup.endIdx].time;
-                        let timeSinceStart = audioSyncPos - lines[currGroup.endIdx].time;
-                        if (gap > 7.0 && timeSinceStart > 4.0) {
+                        let timeSinceEnd = audioSyncPos - lines[currGroup.endIdx].time;
+                        let waitingHex = (currGroup.startIdx < currGroup.endIdx)
+                            ? root.colWaitingGroupHex
+                            : root.colWaitingSingleHex;
+                        if (gap > 7.0 && timeSinceEnd > 4.0) {
                             newCurrentLine = `${baseText} (♪ ${remaining}s)`;
                             // Line has ended and is waiting in gap countdown: remove boldness and soften past line
-                            let waitingHex = (currGroup.startIdx < currGroup.endIdx)
-                                ? root.colWaitingGroupHex
-                                : root.colWaitingSingleHex;
                             newCurrentLineRich = `<font color="${waitingHex}">${baseText}</font> <font color="${root.colTimerHex}">(♪ ${remaining}s)</font>`;
                         } else {
                             newCurrentLine = baseText;
                             newCurrentLineRich = baseTextRich;
                         }
                     } else {
-                        newCurrentLine = baseText;
-                        newCurrentLineRich = baseTextRich;
+                        // remaining == 0: countdown done, lyric hasn't started yet (sub-200ms gap)
+                        // Dim the line so it doesn't flash full-brightness before the next lyric
+                        let gap = nextTime - lines[currGroup.endIdx].time;
+                        let timeSinceEnd = audioSyncPos - lines[currGroup.endIdx].time;
+                        if (gap > 7.0 && timeSinceEnd > 4.0) {
+                            let waitingHex = (currGroup.startIdx < currGroup.endIdx)
+                                ? root.colWaitingGroupHex
+                                : root.colWaitingSingleHex;
+                            newCurrentLine = baseText;
+                            newCurrentLineRich = `<font color="${waitingHex}">${baseText}</font>`;
+                        } else {
+                            newCurrentLine = baseText;
+                            newCurrentLineRich = baseTextRich;
+                        }
                     }
                 } else {
                     let trackLen = activePlayer?.length || 0;
-                    let remainingInTrack = Math.max(0, Math.ceil(trackLen - audioSyncPos));
-                    let trackInfo = root.getTrackBaseInfo();
+                    let timeSinceLastLyric = audioSyncPos - lines[currGroup.endIdx].time;
 
-                    if (trackLen > 0 && remainingInTrack > 10.0) {
-                        newCurrentLine = trackInfo.plain ? `${trackInfo.plain} (Outro)` : "Outro";
-                        newCurrentLineRich = trackInfo.plain
-                            ? `${trackInfo.rich} <font color="${root.colTimerHex}">(Outro)</font>`
-                            : `<font color="${root.colTimerHex}">Outro</font>`;
-                    } else if (baseText !== "♪") {
-                        newCurrentLine = baseText;
-                        newCurrentLineRich = baseTextRich;
-                    } else {
-                        // Walk backwards past all consecutive ♪ to find the last real lyric
-                        let lastReal = "";
-                        for (let r = currGroup.startIdx - 1; r >= 0; r--) {
-                            if (lines[r].text !== "♪") { lastReal = lines[r].text; break; }
-                        }
-                        if (lastReal) {
-                            newCurrentLine = lastReal;
-                            newCurrentLineRich = `<font color="${root.colWaitingSingleHex}">${lastReal}</font>`;
+                    if (currGroup.text === "♪") {
+                        // Trailing instrumental marker at end of track: show Outro until song finishes
+                        if (trackLen > 0) {
+                            newCurrentLine = root.trackInfoPlain ? `${root.trackInfoPlain} (Outro)` : "Outro";
+                            newCurrentLineRich = root.trackInfoPlain
+                                ? `${root.trackInfoRich} <font color="${root.colTimerHex}">(Outro)</font>`
+                                : `<font color="${root.colTimerHex}">Outro</font>`;
                         } else {
-                            newCurrentLine = trackInfo.plain || "";
-                            newCurrentLineRich = trackInfo.rich || "";
+                            let lastReal = "";
+                            for (let r = currGroup.startIdx - 1; r >= 0; r--) {
+                                if (lines[r].text !== "♪") { lastReal = lines[r].text; break; }
+                            }
+                            if (lastReal) {
+                                newCurrentLine = lastReal;
+                                newCurrentLineRich = `<font color="${root.colWaitingSingleHex}">${lastReal}</font>`;
+                            } else {
+                                newCurrentLine = root.trackInfoPlain || "";
+                                newCurrentLineRich = root.trackInfoRich || "";
+                            }
+                        }
+                    } else {
+                        // Real lyric at end of track:
+                        // Total outro duration after this line completes (~5s singing window)
+                        let hasSignificantOutro = trackLen > 0 && (trackLen - (lines[currGroup.endIdx].time + 5.0)) > 6.0;
+
+                        if (hasSignificantOutro && timeSinceLastLyric >= 5.0) {
+                            // Singer is done and substantial instrumental outro remains: show Outro and keep it
+                            newCurrentLine = root.trackInfoPlain ? `${root.trackInfoPlain} (Outro)` : "Outro";
+                            newCurrentLineRich = root.trackInfoPlain
+                                ? `${root.trackInfoRich} <font color="${root.colTimerHex}">(Outro)</font>`
+                                : `<font color="${root.colTimerHex}">Outro</font>`;
+                        } else if (timeSinceLastLyric >= 5.0) {
+                            // Song ends shortly after: keep holding the last lyric muted
+                            let waitingHex = (currGroup.startIdx < currGroup.endIdx)
+                                ? root.colWaitingGroupHex
+                                : root.colWaitingSingleHex;
+                            newCurrentLine = baseText;
+                            newCurrentLineRich = `<font color="${waitingHex}">${baseText}</font>`;
+                        } else {
+                            // Actively being sung
+                            newCurrentLine = baseText;
+                            newCurrentLineRich = baseTextRich;
                         }
                     }
                 }
@@ -592,18 +634,17 @@ Singleton {
                 let firstGroup = groups[0];
                 newNextLine = firstGroup.text;
                 let remaining = Math.max(0, Math.ceil(lines[0].time - audioSyncPos));
-                let trackInfo = root.getTrackBaseInfo();
                 if (remaining > 0) {
-                    if (trackInfo.plain) {
-                        newCurrentLine = `${trackInfo.plain} (Intro ♪ ${remaining}s)`;
-                        newCurrentLineRich = `${trackInfo.rich} <font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
+                    if (root.trackInfoPlain) {
+                        newCurrentLine = `${root.trackInfoPlain} (Intro ♪ ${remaining}s)`;
+                        newCurrentLineRich = `${root.trackInfoRich} <font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
                     } else {
                         newCurrentLine = `(Intro ♪ ${remaining}s)`;
                         newCurrentLineRich = `<font color="${root.colTimerHex}">(Intro ♪ ${remaining}s)</font>`;
                     }
                 } else {
-                    newCurrentLine = trackInfo.plain || "";
-                    newCurrentLineRich = trackInfo.rich || "";
+                    newCurrentLine = root.trackInfoPlain || "";
+                    newCurrentLineRich = root.trackInfoRich || "";
                 }
             }
 
