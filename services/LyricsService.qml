@@ -873,7 +873,9 @@ Singleton {
                         let lObj = lines[m];
                         let lineText = root.escapeXml(lObj.text);
                         if (m < currIdx) {
-                            parts.push(`<font color="${root.colPastHex}">${lineText}</font>`);
+                            // In karaoke (word-sync), keep previously sung lines glowing rather than turning them off
+                            let pastCol = (root.hasWordSync || lObj.isWordSynced) ? root.colLitHex : root.colPastHex;
+                            parts.push(`<font color="${pastCol}">${lineText}</font>`);
                         } else if (m === currIdx) {
                             if (lObj.isWordSynced && lObj.words && lObj.words.length > 0) {
                                 parts.push(root.generateWordRichText(lObj, wordSyncPos));
