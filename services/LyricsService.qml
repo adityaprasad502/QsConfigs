@@ -35,6 +35,7 @@ Singleton {
 
     property real lastKnownPosition: 0
     property real lastKnownTimestamp: 0
+    property real lastWordSyncPos: 0
     property real syncLeadSeconds: 0.25 // Lead time in seconds (switches to next line slightly earlier)
 
     // Precomputed lyric style colors: reactive to theme/wallpaper changes, evaluated once (0 overhead in tick)
@@ -50,11 +51,19 @@ Singleton {
 
     readonly property var charFadeShades: {
         let arr = [];
-        for (let s = 0; s <= 10; s++) {
-            let frac = s / 10.0;
+        for (let s = 0; s <= 20; s++) {
+            let frac = s / 20.0;
             arr.push(ColorUtils.mix(root.colLitHex, root.colUpcomingHex, frac).toString());
         }
         return arr;
+    }
+
+    function vocalEase(t, dur) {
+        if (t <= 0) return 0;
+        if (t >= 1) return 1;
+        if (dur < 0.18) return t;
+        // Smoothstep Hermite S-curve for natural vocal resonance
+        return t * t * (3.0 - 2.0 * t);
     }
 
     function escapeXml(s) {
@@ -67,50 +76,80 @@ Singleton {
             return `<font color="${root.colLitHex}">${root.escapeXml(line ? line.text : "")}</font>`;
         }
 
-        let rich = "";
         let words = line.words;
+        let sungPart = "";
+        let activeCharPart = "";
+        let fadeColor = root.colLitHex;
+        let upcomingPart = "";
+        let foundActive = false;
+
         for (let i = 0; i < words.length; i++) {
             let w = words[i];
-            if (currentSec >= w.end) {
-                // Already sung word -> STAYS LIT UP! (Apple Music style)
-                rich += `<font color="${root.colLitHex}">${root.escapeXml(w.text)}</font>`;
-            } else if (currentSec >= w.start) {
-                // Currently singing word -> character-by-character wipe into full lit
-                let rawText = w.text || "";
-                let chars = Array.from(rawText);
-                let len = chars.length;
-                let dur = Math.max(0.001, (w.end - w.start));
-                let t = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
+            if (!foundActive) {
+                if (currentSec >= w.end) {
+                    sungPart += w.text;
+                } else if (currentSec >= w.start) {
+                    foundActive = true;
+                    let rawText = w.text || "";
+                    let leadMatch = rawText.match(/^\s*/);
+                    let trailMatch = rawText.match(/\s*$/);
+                    let leadSpace = leadMatch ? leadMatch[0] : "";
+                    let trailSpace = trailMatch ? trailMatch[0] : "";
+                    let coreText = rawText.substring(leadSpace.length, rawText.length - trailSpace.length);
 
-                if (len <= 1) {
-                    let shadeIdx = Math.round(t * 10);
-                    let fadeCol = root.charFadeShades[shadeIdx] || root.colLitHex;
-                    rich += `<font color="${fadeCol}">${root.escapeXml(rawText)}</font>`;
+                    if (coreText.length === 0) {
+                        sungPart += rawText;
+                        continue;
+                    }
+
+                    let dur = Math.max(0.001, (w.end - w.start));
+                    let rawT = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
+                    let t = root.vocalEase(rawT, dur);
+
+                    let chars = Array.from(coreText);
+                    let len = chars.length;
+
+                    if (len <= 1) {
+                        let shadeIdx = Math.round(t * 20);
+                        fadeColor = root.charFadeShades[shadeIdx] || root.colLitHex;
+                        sungPart += leadSpace;
+                        activeCharPart = coreText;
+                        upcomingPart += trailSpace;
+                    } else {
+                        let charPos = t * len;
+                        let activeIdx = Math.min(len - 1, Math.floor(charPos));
+                        let charFrac = charPos - activeIdx;
+                        let shadeIdx = Math.round(charFrac * 20);
+                        fadeColor = root.charFadeShades[shadeIdx] || root.colLitHex;
+
+                        let sungChars = chars.slice(0, activeIdx).join("");
+                        let activeChar = chars[activeIdx];
+                        let upcomingChars = chars.slice(activeIdx + 1).join("");
+
+                        sungPart += leadSpace + sungChars;
+                        activeCharPart = activeChar;
+                        upcomingPart += upcomingChars + trailSpace;
+                    }
                 } else {
-                    let charPos = t * len;
-                    let activeIdx = Math.min(len - 1, Math.floor(charPos));
-                    let charFrac = charPos - activeIdx;
-                    let shadeIdx = Math.round(charFrac * 10);
-                    let fadeCol = root.charFadeShades[shadeIdx] || root.colLitHex;
-
-                    let sung = chars.slice(0, activeIdx).join("");
-                    let activeChar = chars[activeIdx];
-                    let upcoming = chars.slice(activeIdx + 1).join("");
-
-                    if (sung.length > 0) {
-                        rich += `<font color="${root.colLitHex}">${root.escapeXml(sung)}</font>`;
-                    }
-                    rich += `<font color="${fadeCol}">${root.escapeXml(activeChar)}</font>`;
-                    if (upcoming.length > 0) {
-                        rich += `<font color="${root.colUpcomingHex}">${root.escapeXml(upcoming)}</font>`;
-                    }
+                    foundActive = true;
+                    upcomingPart += w.text;
                 }
             } else {
-                // Upcoming word -> dimmed
-                rich += `<font color="${root.colUpcomingHex}">${root.escapeXml(w.text)}</font>`;
+                upcomingPart += w.text;
             }
         }
-        return rich;
+
+        let res = "";
+        if (sungPart.length > 0) {
+            res += `<font color="${root.colLitHex}">${root.escapeXml(sungPart)}</font>`;
+        }
+        if (activeCharPart.length > 0) {
+            res += `<font color="${fadeColor}">${root.escapeXml(activeCharPart)}</font>`;
+        }
+        if (upcomingPart.length > 0) {
+            res += `<font color="${root.colUpcomingHex}">${root.escapeXml(upcomingPart)}</font>`;
+        }
+        return res;
     }
 
     // Precomputed track title + artist strings: reactive to track/theme changes, zero overhead in 200ms tick
@@ -195,6 +234,14 @@ Singleton {
     Process {
         id: syllableProc
         stdout: StdioCollector {}
+        stderr: SplitParser {
+            onRead: data => {
+                let msg = data.trim();
+                if (msg.startsWith("STATUS:")) {
+                    root.loadingStatus = msg.substring(7).trim();
+                }
+            }
+        }
         onExited: (exitCode, exitStatus) => {
             let out = syllableProc.stdout.text || "";
             let cb = root.syllableCallback;
@@ -236,6 +283,7 @@ Singleton {
             if (onFallback) onFallback();
         };
 
+        root.loadingStatus = "Searching (src1)…";
         syllableProc.command = [
             "python3",
             Quickshell.shellPath("scripts/lyrics/syllables.py"),
@@ -268,7 +316,7 @@ Singleton {
                         } catch(e) {}
                     }
                     root.activeGetXhr = null;
-                    root.loadingStatus = "Fetching Lyrics, Trying Harder…";
+                    root.loadingStatus = "Searching (src4 deep)…";
                     root.searchLyricsFallback(myFetchId, cleanTrack, cleanArtist, targetDuration, cacheKey);
                 }
             };
@@ -278,7 +326,7 @@ Singleton {
             getXhr.setRequestHeader(root._xuaName, root._uaVal);
             getXhr.send();
         } else {
-            root.loadingStatus = "Searching…";
+            root.loadingStatus = "Searching (src4)…";
             root.searchLyricsFallback(myFetchId, cleanTrack, cleanArtist, targetDuration, cacheKey);
         }
     }
@@ -303,7 +351,7 @@ Singleton {
             return;
         }
         root.loading = true;
-        root.loadingStatus = "Fetching Lyrics…";
+        root.loadingStatus = "Searching (src1)…";
         root.lyricLines = [];
         root.lyricGroupIndex = [];
         root.currentLyricLine = "";
@@ -368,34 +416,6 @@ Singleton {
         xhr.send();
     }
 
-    function isChineseOrJapanese(s) {
-        if (!s) return false;
-        return /[\u4E00-\u9FFF\u3400-\u4DBF\u3040-\u309F\u30A0-\u30FF\u31F0-\u31FF]/.test(s);
-    }
-
-    function shouldMergeSyllables(prevText, curText) {
-        if (!prevText || !curText) return false;
-        if (/\s$/.test(prevText) || /^\s/.test(curText)) return false;
-        if (root.isChineseOrJapanese(prevText) || root.isChineseOrJapanese(curText)) return false;
-        return /[a-zA-Z0-9]/.test(prevText) && /[a-zA-Z0-9]/.test(curText);
-    }
-
-    function mergeSyllableWords(syllables) {
-        if (!syllables || syllables.length < 2) return syllables;
-        let merged = [];
-        for (let i = 0; i < syllables.length; i++) {
-            let cur = syllables[i];
-            if (merged.length > 0 && root.shouldMergeSyllables(merged[merged.length - 1].text, cur.text)) {
-                let prev = merged[merged.length - 1];
-                prev.text += cur.text;
-                prev.end = cur.end;
-            } else {
-                merged.push({ text: cur.text, start: cur.start, end: cur.end });
-            }
-        }
-        return merged;
-    }
-
     function parseTimeHeader(h) {
         if (!h) return 0;
         if (h.includes(":")) {
@@ -415,11 +435,17 @@ Singleton {
         let t = text.trim();
         if (t === "" || t === "♪") return false;
 
-        let creditPattern = /^(lyrics\s*(by)?|composed\s*(by)?|written\s*(by)?|produced\s*(by)?|arranged\s*(by)?|arranger|music\s*(by)?|vocals?\s*(by)?|track\s*:\s*|artist\s*:\s*|album\s*:\s*|作\s*词|作\s*曲|编\s*曲|制\s*作|演唱|词曲)\s*[:：]/i;
+        let creditPattern = /^(lyrics?( by)?|lyricist|composed?( by)?|composer|written( by)?|writer|produced?( by)?|producer|arranged?( by)?|arranger|music( by)?|vocals?( by)?|track\s*[:：\-]|artist\s*[:：\-]|album\s*[:：\-]|synced by|lrc by|source\s*[:：]|mixing( by)?|mixed by|mastering( by)?|mastered by|recorded?( by)?|recording( by)?|engineered by|publisher|label|qqmusic|kugou|netease|163\.com|lrclib|作\s*词|作\s*曲|编\s*曲|制\s*作|演唱|词曲|词\s*[:：]|曲\s*[:：]|录音|混音|母带|监制|统筹|企划|出品|发行|后期|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|原唱|翻唱|伴奏|配唱|乐器)/i;
         if (creditPattern.test(t)) return true;
 
-        if (timeSec < 1.5 && duration > 0 && duration < 0.3) {
-            return true;
+        if (timeSec < 15.0) {
+            let nt = root.normalizeStr(t);
+            let nTitle = root.normalizeStr(root.currentTrackName || activePlayer?.trackTitle || "");
+            let nArtist = root.normalizeStr(root.currentArtistName || activePlayer?.trackArtist || "");
+            if (nTitle && nArtist && nt.includes(nTitle) && nt.includes(nArtist)) return true;
+            if (nTitle && nt === nTitle) return true;
+            if (nArtist && nt === nArtist) return true;
+            if (/^.+?\s*[-–—]\s*.+?$/.test(t) && ((nTitle && nt.includes(nTitle)) || (nArtist && nt.includes(nArtist)))) return true;
         }
 
         return false;
@@ -489,14 +515,14 @@ Singleton {
                                 let p = tok.tag.split(",");
                                 let off = parseFloat(p[0]) || 0;
                                 let dur = parseFloat(p[1]) || 0;
-                                startSec = (off > 1000 && off >= (timeSec + globalOffsetSec) * 1000) ? (off / 1000.0) - globalOffsetSec : timeSec + (off / 1000.0);
+                                startSec = timeSec + (off / 1000.0);
                                 endSec = startSec + (dur / 1000.0);
                             } else {
                                 let v = parseFloat(tok.tag) || 0;
                                 startSec = ((v > 1000) ? v / 1000.0 : v) - globalOffsetSec;
                             }
 
-                            if (endSec === 0 && t + 1 < tokens.length) {
+                            if (endSec <= startSec && t + 1 < tokens.length) {
                                 let nextTag = tokens[t + 1].tag;
                                 if (nextTag.includes(":")) {
                                     let np = nextTag.split(":");
@@ -504,7 +530,7 @@ Singleton {
                                 } else if (nextTag.includes(",")) {
                                     let np = nextTag.split(",");
                                     let noff = parseFloat(np[0]) || 0;
-                                    endSec = (noff > 1000 && noff >= (timeSec + globalOffsetSec) * 1000) ? (noff / 1000.0) - globalOffsetSec : timeSec + (noff / 1000.0);
+                                    endSec = timeSec + (noff / 1000.0);
                                 }
                             }
 
@@ -532,10 +558,10 @@ Singleton {
                     if (words.length > 0) isWordSynced = true;
                 }
 
-                let mergedWords = (words.length > 0) ? root.mergeSyllableWords(words) : null;
+                let lineWords = (words.length > 0) ? words : null;
                 let cleanText = "";
-                if (mergedWords && mergedWords.length > 0) {
-                    cleanText = mergedWords.map(w => w.text).join("").trim();
+                if (lineWords && lineWords.length > 0) {
+                    cleanText = lineWords.map(w => w.text).join("").trim();
                 } else {
                     cleanText = content.replace(/<[^>]+>/g, "").replace(/\([^)]+\)/g, "").trim();
                 }
@@ -545,22 +571,32 @@ Singleton {
                     continue;
                 }
 
-                let lineEnd = (mergedWords && mergedWords.length > 0 && mergedWords[mergedWords.length - 1].end > 0)
-                    ? mergedWords[mergedWords.length - 1].end
+                let lineEnd = (lineWords && lineWords.length > 0 && lineWords[lineWords.length - 1].end > 0)
+                    ? lineWords[lineWords.length - 1].end
                     : (lineDuration > 0 ? timeSec + lineDuration : 0);
 
                 parsed.push({
                     time: timeSec,
                     endTime: lineEnd,
                     text: cleanText,
-                    isWordSynced: isWordSynced && mergedWords && mergedWords.length > 0,
-                    words: isWordSynced ? mergedWords : null
+                    isWordSynced: isWordSynced && lineWords && lineWords.length > 0,
+                    words: isWordSynced ? lineWords : null
                 });
             }
         }
 
         if (parsed.length > 1) {
             parsed.sort((a, b) => a.time - b.time);
+        }
+
+        // Strip leading blank / placeholder / "♪" lines before the first genuine singing lyric
+        while (parsed.length > 0 && (!parsed[0].text || parsed[0].text.trim() === "" || parsed[0].text === "♪")) {
+            parsed.shift();
+        }
+
+        // Strip trailing blank lines
+        while (parsed.length > 0 && (!parsed[parsed.length - 1].text || parsed[parsed.length - 1].text.trim() === "")) {
+            parsed.pop();
         }
 
         for (let i = 0; i < parsed.length; i++) {
@@ -622,8 +658,9 @@ Singleton {
         if (newTitle !== root.currentTrackName || newArtist !== root.currentArtistName) {
             root.currentTrackName = newTitle;
             root.currentArtistName = newArtist;
-            root.lastKnownPosition = activePlayer?.position || 0;
+            root.lastKnownPosition = (activePlayer?.position && activePlayer.position < 3.0) ? activePlayer.position : 0;
             root.lastKnownTimestamp = Date.now();
+            root.lastWordSyncPos = root.lastKnownPosition;
             if (root.isSupportedPlayer(activePlayer)) {
                 root.fetchLyrics(root.currentTrackName, root.currentArtistName);
             } else {
@@ -644,8 +681,16 @@ Singleton {
         function onTrackTitleChanged() { root.syncTrackChange(); }
         function onTrackArtistChanged() { root.syncTrackChange(); }
         function onPositionChanged() {
-            root.lastKnownPosition = activePlayer?.position || 0;
-            root.lastKnownTimestamp = Date.now();
+            let p = activePlayer?.position || 0;
+            let now = Date.now();
+            let est = root.lastKnownPosition + (now - root.lastKnownTimestamp) / 1000.0;
+            if (Math.abs(p - est) > 1.2) {
+                root.lastKnownPosition = p;
+                root.lastKnownTimestamp = now;
+                root.lastWordSyncPos = p;
+            } else if (Math.abs(p - est) > 0.05) {
+                root.lastKnownPosition += (p - est) * 0.15;
+            }
         }
     }
 
@@ -756,13 +801,18 @@ Singleton {
         running: activePlayer?.playbackState === MprisPlaybackState.Playing && root.lyricLines.length > 0
         onTriggered: {
             let pos = activePlayer?.position || 0;
-            let elapsedSec = (Date.now() - root.lastKnownTimestamp) / 1000.0;
+            let now = Date.now();
+            let elapsedSec = (now - root.lastKnownTimestamp) / 1000.0;
 
             if (pos !== root.lastKnownPosition) {
-                if (Math.abs(pos - (root.lastKnownPosition + elapsedSec)) > 1.5) {
+                let drift = pos - (root.lastKnownPosition + elapsedSec);
+                if (Math.abs(drift) > 1.2) {
                     root.lastKnownPosition = pos;
-                    root.lastKnownTimestamp = Date.now();
+                    root.lastKnownTimestamp = now;
                     elapsedSec = 0;
+                    root.lastWordSyncPos = pos;
+                } else if (Math.abs(drift) > 0.05) {
+                    root.lastKnownPosition += drift * 0.15;
                 }
             }
 
@@ -770,7 +820,17 @@ Singleton {
             // For word-by-word karaoke, words and lines synchronize precisely with audio playback (0s lead).
             let lineSyncPos = Math.max(0, currentPos + (root.hasWordSync ? 0.0 : root.syncLeadSeconds));
             let audioSyncPos = lineSyncPos;
+
             let wordSyncPos = Math.max(0, currentPos);
+            if (activePlayer?.playbackState === MprisPlaybackState.Playing) {
+                if (wordSyncPos >= root.lastWordSyncPos && (wordSyncPos - root.lastWordSyncPos) < 2.0) {
+                    root.lastWordSyncPos = wordSyncPos;
+                } else if (Math.abs(wordSyncPos - root.lastWordSyncPos) >= 2.0) {
+                    root.lastWordSyncPos = wordSyncPos;
+                } else {
+                    wordSyncPos = root.lastWordSyncPos;
+                }
+            }
 
             let lines = root.lyricLines;
             let groups = root.lyricGroupIndex;
