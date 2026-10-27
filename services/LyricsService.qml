@@ -49,11 +49,25 @@ Singleton {
     readonly property string colWaitingGroupHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
     readonly property string colWaitingSingleHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.75).toString()
 
+    // Background vocal styling: softer harmony glow and dimmer upcoming tone (Apple Music style)
+    readonly property string colBgLitHex: ColorUtils.applyAlpha(root.colLitHex, 0.60).toString()
+    readonly property string colBgUpcomingHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.25).toString()
+    readonly property string colBgPastHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.25).toString()
+
     readonly property var charFadeShades: {
         let arr = [];
         for (let s = 0; s <= 20; s++) {
             let frac = s / 20.0;
             arr.push(ColorUtils.mix(root.colLitHex, root.colUpcomingHex, frac).toString());
+        }
+        return arr;
+    }
+
+    readonly property var charFadeShadesBg: {
+        let arr = [];
+        for (let s = 0; s <= 20; s++) {
+            let frac = s / 20.0;
+            arr.push(ColorUtils.mix(root.colBgLitHex, root.colBgUpcomingHex, frac).toString());
         }
         return arr;
     }
@@ -71,84 +85,133 @@ Singleton {
         return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
+    function formatLineRich(rawText, mainCol, bgCol) {
+        if (!rawText) return "";
+        let parenRegex = /(\([^\)]*\))/g;
+        let parts = rawText.split(parenRegex);
+        let res = "";
+        for (let i = 0; i < parts.length; i++) {
+            let part = parts[i];
+            if (!part) continue;
+            let esc = root.escapeXml(part);
+            if (part.startsWith("(") && part.endsWith(")")) {
+                let col = bgCol || root.colBgLitHex;
+                res += `<i><font color="${col}">${esc}</font></i>`;
+            } else {
+                let col = mainCol || root.colLitHex;
+                res += `<font color="${col}">${esc}</font>`;
+            }
+        }
+        return res;
+    }
+
     function generateWordRichText(line, currentSec) {
         if (!line || !line.isWordSynced || !line.words || line.words.length === 0) {
             return `<font color="${root.colLitHex}">${root.escapeXml(line ? line.text : "")}</font>`;
         }
 
         let words = line.words;
-        let sungPart = "";
-        let activeCharPart = "";
-        let fadeColor = root.colLitHex;
-        let upcomingPart = "";
-        let foundActive = false;
+        let chunks = [];
 
         for (let i = 0; i < words.length; i++) {
             let w = words[i];
-            if (!foundActive) {
-                if (currentSec >= w.end) {
-                    sungPart += w.text;
-                } else if (currentSec >= w.start) {
-                    foundActive = true;
-                    let rawText = w.text || "";
-                    let leadMatch = rawText.match(/^\s*/);
-                    let trailMatch = rawText.match(/\s*$/);
-                    let leadSpace = leadMatch ? leadMatch[0] : "";
-                    let trailSpace = trailMatch ? trailMatch[0] : "";
-                    let coreText = rawText.substring(leadSpace.length, rawText.length - trailSpace.length);
+            let isBg = w.isBg || false;
 
-                    if (coreText.length === 0) {
-                        sungPart += rawText;
-                        continue;
-                    }
+            if (currentSec >= w.end) {
+                chunks.push({ type: "sung", text: w.text, isBg: isBg });
+            } else if (currentSec >= w.start) {
+                let rawText = w.text || "";
+                let leadMatch = rawText.match(/^\s*/);
+                let trailMatch = rawText.match(/\s*$/);
+                let leadSpace = leadMatch ? leadMatch[0] : "";
+                let trailSpace = trailMatch ? trailMatch[0] : "";
+                let coreText = rawText.substring(leadSpace.length, rawText.length - trailSpace.length);
 
-                    let dur = Math.max(0.001, (w.end - w.start));
-                    let rawT = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
-                    let t = root.vocalEase(rawT, dur);
+                if (coreText.length === 0) {
+                    chunks.push({ type: "sung", text: rawText, isBg: isBg });
+                    continue;
+                }
 
-                    let chars = Array.from(coreText);
-                    let len = chars.length;
+                let dur = Math.max(0.001, (w.end - w.start));
+                let rawT = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
+                let t = root.vocalEase(rawT, dur);
 
-                    if (len <= 1) {
-                        let shadeIdx = Math.round(t * 20);
-                        fadeColor = root.charFadeShades[shadeIdx] || root.colLitHex;
-                        sungPart += leadSpace;
-                        activeCharPart = coreText;
-                        upcomingPart += trailSpace;
-                    } else {
-                        let charPos = t * len;
-                        let activeIdx = Math.min(len - 1, Math.floor(charPos));
-                        let charFrac = charPos - activeIdx;
-                        let shadeIdx = Math.round(charFrac * 20);
-                        fadeColor = root.charFadeShades[shadeIdx] || root.colLitHex;
+                let chars = Array.from(coreText);
+                let len = chars.length;
 
-                        let sungChars = chars.slice(0, activeIdx).join("");
-                        let activeChar = chars[activeIdx];
-                        let upcomingChars = chars.slice(activeIdx + 1).join("");
-
-                        sungPart += leadSpace + sungChars;
-                        activeCharPart = activeChar;
-                        upcomingPart += upcomingChars + trailSpace;
-                    }
+                if (len <= 1) {
+                    let shadeIdx = Math.round(t * 20);
+                    chunks.push({
+                        type: "active",
+                        sung: leadSpace,
+                        active: coreText,
+                        upcoming: trailSpace,
+                        shade: shadeIdx,
+                        isBg: isBg
+                    });
                 } else {
-                    foundActive = true;
-                    upcomingPart += w.text;
+                    let charPos = t * len;
+                    let activeIdx = Math.min(len - 1, Math.floor(charPos));
+                    let charFrac = charPos - activeIdx;
+                    let shadeIdx = Math.round(charFrac * 20);
+
+                    chunks.push({
+                        type: "active",
+                        sung: leadSpace + chars.slice(0, activeIdx).join(""),
+                        active: chars[activeIdx],
+                        upcoming: chars.slice(activeIdx + 1).join("") + trailSpace,
+                        shade: shadeIdx,
+                        isBg: isBg
+                    });
                 }
             } else {
-                upcomingPart += w.text;
+                chunks.push({ type: "upcoming", text: w.text, isBg: isBg });
+            }
+        }
+
+        // Collapse adjacent identical chunks to minimize DOM tag nodes
+        let consolidated = [];
+        for (let c = 0; c < chunks.length; c++) {
+            let ch = chunks[c];
+            if (consolidated.length > 0 &&
+                consolidated[consolidated.length - 1].type === ch.type &&
+                consolidated[consolidated.length - 1].isBg === ch.isBg &&
+                ch.type !== "active") {
+                consolidated[consolidated.length - 1].text += ch.text;
+            } else {
+                consolidated.push(ch);
             }
         }
 
         let res = "";
-        if (sungPart.length > 0) {
-            res += `<font color="${root.colLitHex}">${root.escapeXml(sungPart)}</font>`;
+        for (let k = 0; k < consolidated.length; k++) {
+            let item = consolidated[k];
+            let isBg = item.isBg;
+            let litCol = isBg ? root.colBgLitHex : root.colLitHex;
+            let dimCol = isBg ? root.colBgUpcomingHex : root.colUpcomingHex;
+
+            if (item.type === "sung") {
+                let part = `<font color="${litCol}">${root.escapeXml(item.text)}</font>`;
+                res += isBg ? `<i>${part}</i>` : part;
+            } else if (item.type === "active") {
+                let fadeCol = isBg
+                    ? (root.charFadeShadesBg[item.shade] || root.colBgLitHex)
+                    : (root.charFadeShades[item.shade] || root.colLitHex);
+                let part = "";
+                if (item.sung && item.sung.length > 0) {
+                    part += `<font color="${litCol}">${root.escapeXml(item.sung)}</font>`;
+                }
+                part += `<font color="${fadeCol}">${root.escapeXml(item.active)}</font>`;
+                if (item.upcoming && item.upcoming.length > 0) {
+                    part += `<font color="${dimCol}">${root.escapeXml(item.upcoming)}</font>`;
+                }
+                res += isBg ? `<i>${part}</i>` : part;
+            } else if (item.type === "upcoming") {
+                let part = `<font color="${dimCol}">${root.escapeXml(item.text)}</font>`;
+                res += isBg ? `<i>${part}</i>` : part;
+            }
         }
-        if (activeCharPart.length > 0) {
-            res += `<font color="${fadeColor}">${root.escapeXml(activeCharPart)}</font>`;
-        }
-        if (upcomingPart.length > 0) {
-            res += `<font color="${root.colUpcomingHex}">${root.escapeXml(upcomingPart)}</font>`;
-        }
+
         return res;
     }
 
@@ -370,14 +433,14 @@ Singleton {
             root.lyricCache = ({});
         }
 
+        let targetDuration = Math.round(activePlayer?.length || 0);
+
         if (root.lyricCache[cacheKey]) {
             root.loading = false;
             root.loadingStatus = "";
             root.parseLyricsResponse(root.lyricCache[cacheKey]);
             return;
         }
-
-        let targetDuration = Math.round(activePlayer?.length || 0);
 
         // Word-level priority: try syllable-synced lyrics first
         root.fetchSyllableLyrics(myFetchId, cleanTrack, cleanArtist, targetDuration, cacheKey, function() {
@@ -430,7 +493,7 @@ Singleton {
     }
 
 
-    function isCreditOrMetadataLine(text, duration, timeSec) {
+    function isCreditOrMetadataLine(text, duration, timeSec, isWordSynced) {
         if (!text) return true;
         let t = text.trim();
         if (t === "" || t === "♪") return false;
@@ -438,13 +501,11 @@ Singleton {
         let creditPattern = /^(lyrics?( by)?|lyricist|composed?( by)?|composer|written( by)?|writer|produced?( by)?|producer|arranged?( by)?|arranger|music( by)?|vocals?( by)?|track\s*[:：\-]|artist\s*[:：\-]|album\s*[:：\-]|synced by|lrc by|source\s*[:：]|mixing( by)?|mixed by|mastering( by)?|mastered by|recorded?( by)?|recording( by)?|engineered by|publisher|label|qqmusic|kugou|netease|163\.com|lrclib|作\s*词|作\s*曲|编\s*曲|制\s*作|演唱|词曲|词\s*[:：]|曲\s*[:：]|录音|混音|母带|监制|统筹|企划|出品|发行|后期|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|原唱|翻唱|伴奏|配唱|乐器)/i;
         if (creditPattern.test(t)) return true;
 
-        if (timeSec < 15.0) {
+        if (!isWordSynced && timeSec < 12.0) {
             let nt = root.normalizeStr(t);
             let nTitle = root.normalizeStr(root.currentTrackName || activePlayer?.trackTitle || "");
             let nArtist = root.normalizeStr(root.currentArtistName || activePlayer?.trackArtist || "");
             if (nTitle && nArtist && nt.includes(nTitle) && nt.includes(nArtist)) return true;
-            if (nTitle && nt === nTitle) return true;
-            if (nArtist && nt === nArtist) return true;
             if (/^.+?\s*[-–—]\s*.+?$/.test(t) && ((nTitle && nt.includes(nTitle)) || (nArtist && nt.includes(nArtist)))) return true;
         }
 
@@ -542,7 +603,7 @@ Singleton {
                         }
                         if (words.length > 0) isWordSynced = true;
                     }
-                } else if (content.includes("(") && content.includes(")")) {
+                } else if (/\(\d+,\d+\)/.test(content)) {
                     let parenRegex = /\((\d+),(\d+)\)([^(]*)/g;
                     let pm;
                     while ((pm = parenRegex.exec(content)) !== null) {
@@ -559,15 +620,24 @@ Singleton {
                 }
 
                 let lineWords = (words.length > 0) ? words : null;
+                if (lineWords && lineWords.length > 0) {
+                    let inParen = false;
+                    for (let wIdx = 0; wIdx < lineWords.length; wIdx++) {
+                        let wObj = lineWords[wIdx];
+                        if (wObj.text.includes("(")) inParen = true;
+                        wObj.isBg = inParen || wObj.isBg || false;
+                        if (wObj.text.includes(")")) inParen = false;
+                    }
+                }
                 let cleanText = "";
                 if (lineWords && lineWords.length > 0) {
                     cleanText = lineWords.map(w => w.text).join("").trim();
                 } else {
-                    cleanText = content.replace(/<[^>]+>/g, "").replace(/\([^)]+\)/g, "").trim();
+                    cleanText = content.replace(/<[^>]+>/g, "").replace(/\(\d+,\d+\)/g, "").trim();
                 }
                 if (cleanText.length === 0) cleanText = "♪";
 
-                if (root.isCreditOrMetadataLine(cleanText, lineDuration, timeSec)) {
+                if (root.isCreditOrMetadataLine(cleanText, lineDuration, timeSec, isWordSynced && lineWords && lineWords.length > 0)) {
                     continue;
                 }
 
@@ -602,7 +672,7 @@ Singleton {
         for (let i = 0; i < parsed.length; i++) {
             let p = parsed[i];
             if (!p.endTime || p.endTime <= p.time) {
-                p.endTime = (i + 1 < parsed.length) ? parsed[i + 1].time : (p.time + 5.0);
+                p.endTime = (i + 1 < parsed.length) ? parsed[i + 1].time : (p.time + 4.5);
             }
             if (p.isWordSynced && p.words && p.words.length > 0) {
                 let lastW = p.words[p.words.length - 1];
@@ -875,15 +945,16 @@ Singleton {
                         if (m < currIdx) {
                             // In karaoke (word-sync), keep previously sung lines glowing rather than turning them off
                             let pastCol = (root.hasWordSync || lObj.isWordSynced) ? root.colLitHex : root.colPastHex;
-                            parts.push(`<font color="${pastCol}">${lineText}</font>`);
+                            let pastBgCol = (root.hasWordSync || lObj.isWordSynced) ? root.colBgLitHex : root.colBgPastHex;
+                            parts.push(root.formatLineRich(lObj.text, pastCol, pastBgCol));
                         } else if (m === currIdx) {
                             if (lObj.isWordSynced && lObj.words && lObj.words.length > 0) {
                                 parts.push(root.generateWordRichText(lObj, wordSyncPos));
                             } else {
-                                parts.push(`<font color="${root.colActiveHex}">${lineText}</font>`);
+                                parts.push(root.formatLineRich(lObj.text, root.colActiveHex, root.colBgLitHex));
                             }
                         } else {
-                            parts.push(`<font color="${root.colUpcomingHex}">${lineText}</font>`);
+                            parts.push(root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex));
                         }
                     }
                     baseTextRich = parts.join(`<font color="${root.colBulletHex}"> • </font>`);
@@ -892,7 +963,7 @@ Singleton {
                     if (lObj && lObj.isWordSynced && lObj.words && lObj.words.length > 0) {
                         baseTextRich = root.generateWordRichText(lObj, wordSyncPos);
                     } else {
-                        baseTextRich = `<font color="${root.colActiveHex}">${root.escapeXml(baseText)}</font>`;
+                        baseTextRich = root.formatLineRich(baseText, root.colActiveHex, root.colBgLitHex);
                     }
                 }
 

@@ -663,7 +663,7 @@ def fetch_p3(title, artist="", target_duration=0):
 # ==============================================================================
 # Main Dispatcher: P1 -> P2 -> P3
 # ==============================================================================
-def is_metadata_line(text, time_ms, title="", artist=""):
+def is_metadata_line(text, time_ms, title="", artist="", has_syllables=False):
     t = text.strip()
     if not t or t == "♪":
         return True
@@ -679,15 +679,11 @@ def is_metadata_line(text, time_ms, title="", artist=""):
     )
     if credit_re.search(t):
         return True
-    if time_ms < 15000:
+    if not has_syllables and time_ms < 12000:
         nt = norm(t)
         ntitle = norm(title)
         nartist = norm(artist)
         if ntitle and nartist and (ntitle in nt and nartist in nt):
-            return True
-        if ntitle and nt == ntitle:
-            return True
-        if nartist and nt == nartist:
             return True
         if re.match(r"^.+?\s*[-–—]\s*.+?$", t) and ((ntitle and ntitle in nt) or (nartist and nartist in nt)):
             return True
@@ -712,10 +708,11 @@ def clean_syllables(lyrics, title="", artist=""):
 
         time_ms = int(m_hdr.group(1))
         rest = m_hdr.group(3)
+        has_syl = "<" in rest and ">" in rest
         plain_text = re.sub(r"<[^>]+>", "", rest)
         plain_text = re.sub(r"\([^)]+\)", "", plain_text).strip()
 
-        if is_metadata_line(plain_text, time_ms, title, artist):
+        if is_metadata_line(plain_text, time_ms, title, artist, has_syllables=has_syl):
             if not seen_first_lyric:
                 continue
             credit_re = re.compile(
