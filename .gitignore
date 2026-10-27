@@ -1,1 +1,3 @@
 .github/copilot-instructions.md
+*.pyc
+__pycache__/

@@ -229,11 +229,18 @@ Item {
 
             readonly property bool isOverflowing: width > 0 && topBarMusicText.implicitWidth > width + 5
 
+            property string lastPlainLine: ""
             onDisplayTextChanged: {
-                topBarMarqueeAnim.stop();
-                topBarMarqueeRow.x = 0;
-                if (isOverflowing)
-                    topBarMarqueeAnim.start();
+                let currentPlain = root.hasLyrics ? LyricsService.currentLyricLine : displayText;
+                if (currentPlain !== lastPlainLine) {
+                    lastPlainLine = currentPlain;
+                    topBarMarqueeAnim.stop();
+                    topBarMarqueeRow.x = 0;
+                    if (isOverflowing)
+                        topBarMarqueeAnim.start();
+                } else if (!topBarMarqueeAnim.running && isOverflowing) {
+                    topBarMarqueeAnim.restart();
+                }
             }
             onIsOverflowingChanged: {
                 if (!isOverflowing) {

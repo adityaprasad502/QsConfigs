@@ -26,22 +26,92 @@ Singleton {
     property var lyricGroupIndex: [] // Precomputed group for each line index
     property int lastGroupWidth: 0
     property bool hasUnsyncedLyrics: false
+    property bool hasWordSync: false
 
     property var activeGetXhr: null
     property var activeSearchXhr: null
+    property var syllableCallback: null
+    property int syllableFetchId: 0
 
     property real lastKnownPosition: 0
     property real lastKnownTimestamp: 0
     property real syncLeadSeconds: 0.25 // Lead time in seconds (switches to next line slightly earlier)
 
-    // Precomputed lyric style colors: reactive to theme/wallpaper changes, evaluated once (0 overhead in 200ms tick)
+    // Precomputed lyric style colors: reactive to theme/wallpaper changes, evaluated once (0 overhead in tick)
     readonly property string colPastHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.35).toString()
-    readonly property string colUpcomingHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
-    readonly property string colActiveHex: (Appearance?.colors?.colSubtext ?? "#948f94").toString()
+    readonly property string colUpcomingHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.40).toString()
+    readonly property string colLitHex: ColorUtils.applyAlpha(Appearance?.colors?.colOnLayer1 ?? Appearance?.colors?.colOnLayer0 ?? "#e6e1e1", 0.85).toString()
+    readonly property string colActiveHex: colLitHex
+    readonly property string colWordHighlightHex: (Appearance?.colors?.colPrimary ?? "#38bdf8").toString()
     readonly property string colBulletHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.40).toString()
     readonly property string colTimerHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
     readonly property string colWaitingGroupHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
     readonly property string colWaitingSingleHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.75).toString()
+
+    readonly property var charFadeShades: {
+        let arr = [];
+        for (let s = 0; s <= 10; s++) {
+            let frac = s / 10.0;
+            arr.push(ColorUtils.mix(root.colLitHex, root.colUpcomingHex, frac).toString());
+        }
+        return arr;
+    }
+
+    function escapeXml(s) {
+        if (!s) return "";
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function generateWordRichText(line, currentSec) {
+        if (!line || !line.isWordSynced || !line.words || line.words.length === 0) {
+            return `<font color="${root.colLitHex}">${root.escapeXml(line ? line.text : "")}</font>`;
+        }
+
+        let rich = "";
+        let words = line.words;
+        for (let i = 0; i < words.length; i++) {
+            let w = words[i];
+            if (currentSec >= w.end) {
+                // Already sung word -> STAYS LIT UP! (Apple Music style)
+                rich += `<font color="${root.colLitHex}">${root.escapeXml(w.text)}</font>`;
+            } else if (currentSec >= w.start) {
+                // Currently singing word -> character-by-character wipe into full lit
+                let rawText = w.text || "";
+                let chars = Array.from(rawText);
+                let len = chars.length;
+                let dur = Math.max(0.001, (w.end - w.start));
+                let t = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
+
+                if (len <= 1) {
+                    let shadeIdx = Math.round(t * 10);
+                    let fadeCol = root.charFadeShades[shadeIdx] || root.colLitHex;
+                    rich += `<font color="${fadeCol}">${root.escapeXml(rawText)}</font>`;
+                } else {
+                    let charPos = t * len;
+                    let activeIdx = Math.min(len - 1, Math.floor(charPos));
+                    let charFrac = charPos - activeIdx;
+                    let shadeIdx = Math.round(charFrac * 10);
+                    let fadeCol = root.charFadeShades[shadeIdx] || root.colLitHex;
+
+                    let sung = chars.slice(0, activeIdx).join("");
+                    let activeChar = chars[activeIdx];
+                    let upcoming = chars.slice(activeIdx + 1).join("");
+
+                    if (sung.length > 0) {
+                        rich += `<font color="${root.colLitHex}">${root.escapeXml(sung)}</font>`;
+                    }
+                    rich += `<font color="${fadeCol}">${root.escapeXml(activeChar)}</font>`;
+                    if (upcoming.length > 0) {
+                        rich += `<font color="${root.colUpcomingHex}">${root.escapeXml(upcoming)}</font>`;
+                    }
+                }
+            } else {
+                // Upcoming word -> dimmed
+                rich += `<font color="${root.colUpcomingHex}">${root.escapeXml(w.text)}</font>`;
+            }
+        }
+        return rich;
+    }
 
     // Precomputed track title + artist strings: reactive to track/theme changes, zero overhead in 200ms tick
     readonly property string trackInfoPlain: {
@@ -122,53 +192,61 @@ Singleton {
 
     property var lyricCache: ({})
 
-    function fetchLyrics(track, artist) {
+    Process {
+        id: syllableProc
+        stdout: StdioCollector {}
+        onExited: (exitCode, exitStatus) => {
+            let out = syllableProc.stdout.text || "";
+            let cb = root.syllableCallback;
+            let fid = root.syllableFetchId;
+            root.syllableCallback = null;
+            if (cb) {
+                cb(exitCode === 0 ? out : "", fid);
+            }
+        }
+    }
+
+    function abortAllXhrs() {
         if (root.activeGetXhr) { root.activeGetXhr.abort(); root.activeGetXhr = null; }
         if (root.activeSearchXhr) { root.activeSearchXhr.abort(); root.activeSearchXhr = null; }
+        if (syllableProc.running) { syllableProc.running = false; }
+        root.syllableCallback = null;
+    }
 
-        root.currentFetchId++;
-        let myFetchId = root.currentFetchId;
-
-        if (!track || track === "") {
-            root.lyricLines = [];
-            root.lyricGroupIndex = [];
-            root.hasUnsyncedLyrics = false;
-            root.currentLyricLine = "";
-            root.currentLyricLineRich = "";
-            root.currentGroupStartIdx = -1;
-            root.nextLyricLine = "";
-            root.loading = false;
-            root.loadingStatus = "";
-            return;
+    function fetchSyllableLyrics(fetchId, cleanTrack, cleanArtist, targetDuration, cacheKey, onFallback) {
+        if (syllableProc.running) {
+            syllableProc.running = false;
         }
-        root.loading = true;
-        root.loadingStatus = "Fetching Lyrics…";
-        root.lyricLines = [];
-        root.lyricGroupIndex = [];
-        root.currentLyricLine = "";
-        root.currentLyricLineRich = "";
-        root.currentGroupStartIdx = -1;
-        root.nextLyricLine = "";
-        root.hasUnsyncedLyrics = false;
+        root.syllableFetchId = fetchId;
+        root.syllableCallback = function(output, fid) {
+            if (fid !== root.currentFetchId) return;
+            if (output && output.includes("<") && output.includes(">")) {
+                let parsed = root.parseLyricsString(output);
+                if (parsed && parsed.length > 0 && parsed.some(function(l) { return l.isWordSynced; })) {
+                    root.lyricCache[cacheKey] = { syncedLyrics: output, lines: parsed, hasWordSync: true };
+                    root.lyricLines = parsed;
+                    root.hasWordSync = true;
+                    root.hasUnsyncedLyrics = false;
+                    root.buildGroupIndex();
+                    root.loading = false;
+                    root.loadingStatus = "";
+                    return;
+                }
+            }
+            if (onFallback) onFallback();
+        };
 
-        let cleanTrack = StringUtils.cleanMusicTitle(track);
-        let cleanArtist = artist || "";
-        let cacheKey = (cleanTrack + "___" + cleanArtist).toLowerCase();
+        syllableProc.command = [
+            "python3",
+            Quickshell.shellPath("scripts/lyrics/syllables.py"),
+            cleanTrack,
+            cleanArtist,
+            String(targetDuration || 0)
+        ];
+        syllableProc.running = true;
+    }
 
-        // Simple cache size limit
-        if (Object.keys(root.lyricCache).length > 50) {
-            root.lyricCache = ({});
-        }
-
-        if (root.lyricCache[cacheKey]) {
-            root.loading = false;
-            root.loadingStatus = "";
-            root.parseLyricsResponse(root.lyricCache[cacheKey]);
-            return;
-        }
-
-        let targetDuration = Math.round(activePlayer?.length || 0);
-
+    function fetchLrclib(myFetchId, cleanTrack, cleanArtist, targetDuration, cacheKey) {
         if (targetDuration > 0 && cleanArtist !== "") {
             let getUrl = `https://lrclib.net/api/get?track_name=${encodeURIComponent(cleanTrack)}&artist_name=${encodeURIComponent(cleanArtist)}&duration=${targetDuration}`;
             var getXhr = new XMLHttpRequest();
@@ -205,6 +283,61 @@ Singleton {
         }
     }
 
+    function fetchLyrics(track, artist) {
+        root.abortAllXhrs();
+
+        root.currentFetchId++;
+        let myFetchId = root.currentFetchId;
+
+        if (!track || track === "") {
+            root.lyricLines = [];
+            root.lyricGroupIndex = [];
+            root.hasUnsyncedLyrics = false;
+            root.hasWordSync = false;
+            root.currentLyricLine = "";
+            root.currentLyricLineRich = "";
+            root.currentGroupStartIdx = -1;
+            root.nextLyricLine = "";
+            root.loading = false;
+            root.loadingStatus = "";
+            return;
+        }
+        root.loading = true;
+        root.loadingStatus = "Fetching Lyrics…";
+        root.lyricLines = [];
+        root.lyricGroupIndex = [];
+        root.currentLyricLine = "";
+        root.currentLyricLineRich = "";
+        root.currentGroupStartIdx = -1;
+        root.nextLyricLine = "";
+        root.hasUnsyncedLyrics = false;
+        root.hasWordSync = false;
+
+        let cleanTrack = StringUtils.cleanMusicTitle(track);
+        let cleanArtist = artist || "";
+        let cacheKey = (cleanTrack + "___" + cleanArtist).toLowerCase();
+
+        // Simple cache size limit
+        if (Object.keys(root.lyricCache).length > 50) {
+            root.lyricCache = ({});
+        }
+
+        if (root.lyricCache[cacheKey]) {
+            root.loading = false;
+            root.loadingStatus = "";
+            root.parseLyricsResponse(root.lyricCache[cacheKey]);
+            return;
+        }
+
+        let targetDuration = Math.round(activePlayer?.length || 0);
+
+        // Word-level priority: try syllable-synced lyrics first
+        root.fetchSyllableLyrics(myFetchId, cleanTrack, cleanArtist, targetDuration, cacheKey, function() {
+            // Fallback to LRCLIB
+            root.fetchLrclib(myFetchId, cleanTrack, cleanArtist, targetDuration, cacheKey);
+        });
+    }
+
     function searchLyricsFallback(fetchId, cleanTrack, cleanArtist, targetDuration, cacheKey) {
         let query = `${cleanTrack} ${cleanArtist}`.trim();
         let url = `https://lrclib.net/api/search?q=${encodeURIComponent(query)}`;
@@ -235,28 +368,240 @@ Singleton {
         xhr.send();
     }
 
-    function parseLyricsResponse(data) {
-        if (!data) return;
-        let synced = data.syncedLyrics;
-        root.hasUnsyncedLyrics = (!synced || synced.length === 0) && data.plainLyrics && data.plainLyrics.length > 0;
-        if (synced && synced.length > 0) {
-            let lines = synced.split("\n");
-            let parsed = [];
-            let regex = /\[(\d+:\d+(?:\.\d+)?)\](.*)/;
-            for (let i = 0; i < lines.length; i++) {
-                let match = regex.exec(lines[i]);
-                if (match) {
-                    let timeParts = match[1].split(":");
-                    let timeSec = (parseFloat(timeParts[0]) || 0) * 60.0 + (parseFloat(timeParts[1]) || 0);
-                    let text = match[2].trim();
-                    if (text.length === 0) {
-                        text = "♪";
-                    }
-                    parsed.push({ time: timeSec, text: text });
+    function isChineseOrJapanese(s) {
+        if (!s) return false;
+        return /[\u4E00-\u9FFF\u3400-\u4DBF\u3040-\u309F\u30A0-\u30FF\u31F0-\u31FF]/.test(s);
+    }
+
+    function shouldMergeSyllables(prevText, curText) {
+        if (!prevText || !curText) return false;
+        if (/\s$/.test(prevText) || /^\s/.test(curText)) return false;
+        if (root.isChineseOrJapanese(prevText) || root.isChineseOrJapanese(curText)) return false;
+        return /[a-zA-Z0-9]/.test(prevText) && /[a-zA-Z0-9]/.test(curText);
+    }
+
+    function mergeSyllableWords(syllables) {
+        if (!syllables || syllables.length < 2) return syllables;
+        let merged = [];
+        for (let i = 0; i < syllables.length; i++) {
+            let cur = syllables[i];
+            if (merged.length > 0 && root.shouldMergeSyllables(merged[merged.length - 1].text, cur.text)) {
+                let prev = merged[merged.length - 1];
+                prev.text += cur.text;
+                prev.end = cur.end;
+            } else {
+                merged.push({ text: cur.text, start: cur.start, end: cur.end });
+            }
+        }
+        return merged;
+    }
+
+    function parseTimeHeader(h) {
+        if (!h) return 0;
+        if (h.includes(":")) {
+            let p = h.split(":");
+            return (parseFloat(p[0]) || 0) * 60.0 + (parseFloat(p[1]) || 0);
+        } else if (h.includes(",")) {
+            let p = h.split(",");
+            return (parseFloat(p[0]) || 0) / 1000.0;
+        }
+        let v = parseFloat(h) || 0;
+        return v > 1000 ? v / 1000.0 : v;
+    }
+
+
+    function isCreditOrMetadataLine(text, duration, timeSec) {
+        if (!text) return true;
+        let t = text.trim();
+        if (t === "" || t === "♪") return false;
+
+        let creditPattern = /^(lyrics\s*(by)?|composed\s*(by)?|written\s*(by)?|produced\s*(by)?|arranged\s*(by)?|arranger|music\s*(by)?|vocals?\s*(by)?|track\s*:\s*|artist\s*:\s*|album\s*:\s*|作\s*词|作\s*曲|编\s*曲|制\s*作|演唱|词曲)\s*[:：]/i;
+        if (creditPattern.test(t)) return true;
+
+        if (timeSec < 1.5 && duration > 0 && duration < 0.3) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function parseLyricsString(synced) {
+        if (!synced) return [];
+
+        let globalOffsetSec = 0;
+        let offsetMatch = synced.match(/\[offset:\s*([+-]?\d+)\]/i);
+        if (offsetMatch) {
+            let offsetMs = parseFloat(offsetMatch[1]) || 0;
+            globalOffsetSec = offsetMs / 1000.0;
+        }
+
+        let parsed = [];
+        let lines = synced.split("\n");
+
+        for (let i = 0; i < lines.length; i++) {
+            let rawLine = lines[i].trim();
+            if (!rawLine) continue;
+
+            let headers = [];
+            let headerRegex = /\[(\d+:\d+(?:\.\d+)?|\d+,\d+)\]/g;
+            let lastIdx = 0;
+            let match;
+            while ((match = headerRegex.exec(rawLine)) !== null) {
+                if (match.index === lastIdx) {
+                    headers.push(match[1]);
+                    lastIdx = headerRegex.lastIndex;
+                } else {
+                    break;
                 }
             }
+            if (headers.length === 0) continue;
+
+            let content = rawLine.substring(lastIdx);
+
+            for (let h = 0; h < headers.length; h++) {
+                let timeSec = Math.max(0, root.parseTimeHeader(headers[h]) - globalOffsetSec);
+                let lineDuration = 0;
+                if (headers[h].includes(",")) {
+                    lineDuration = (parseFloat(headers[h].split(",")[1]) || 0) / 1000.0;
+                }
+
+                let words = [];
+                let isWordSynced = false;
+
+                if (content.includes("<") && content.includes(">")) {
+                    let tagRegex = /<([^>]+)>([^<]*)/g;
+                    let tm;
+                    let tokens = [];
+                    while ((tm = tagRegex.exec(content)) !== null) {
+                        tokens.push({ tag: tm[1].trim(), text: tm[2] });
+                    }
+
+                    if (tokens.length > 0) {
+                        for (let t = 0; t < tokens.length; t++) {
+                            let tok = tokens[t];
+                            let startSec = 0;
+                            let endSec = 0;
+
+                            if (tok.tag.includes(":")) {
+                                let p = tok.tag.split(":");
+                                startSec = (parseFloat(p[0]) || 0) * 60.0 + (parseFloat(p[1]) || 0) - globalOffsetSec;
+                            } else if (tok.tag.includes(",")) {
+                                let p = tok.tag.split(",");
+                                let off = parseFloat(p[0]) || 0;
+                                let dur = parseFloat(p[1]) || 0;
+                                startSec = (off > 1000 && off >= (timeSec + globalOffsetSec) * 1000) ? (off / 1000.0) - globalOffsetSec : timeSec + (off / 1000.0);
+                                endSec = startSec + (dur / 1000.0);
+                            } else {
+                                let v = parseFloat(tok.tag) || 0;
+                                startSec = ((v > 1000) ? v / 1000.0 : v) - globalOffsetSec;
+                            }
+
+                            if (endSec === 0 && t + 1 < tokens.length) {
+                                let nextTag = tokens[t + 1].tag;
+                                if (nextTag.includes(":")) {
+                                    let np = nextTag.split(":");
+                                    endSec = (parseFloat(np[0]) || 0) * 60.0 + (parseFloat(np[1]) || 0) - globalOffsetSec;
+                                } else if (nextTag.includes(",")) {
+                                    let np = nextTag.split(",");
+                                    let noff = parseFloat(np[0]) || 0;
+                                    endSec = (noff > 1000 && noff >= (timeSec + globalOffsetSec) * 1000) ? (noff / 1000.0) - globalOffsetSec : timeSec + (noff / 1000.0);
+                                }
+                            }
+
+                            if (tok.text.length > 0) {
+                                words.push({ text: tok.text, start: Math.max(0, startSec), end: Math.max(0, endSec) });
+                            } else if (words.length > 0 && (!words[words.length - 1].end || words[words.length - 1].end <= words[words.length - 1].start)) {
+                                words[words.length - 1].end = Math.max(0, startSec);
+                            }
+                        }
+                        if (words.length > 0) isWordSynced = true;
+                    }
+                } else if (content.includes("(") && content.includes(")")) {
+                    let parenRegex = /\((\d+),(\d+)\)([^(]*)/g;
+                    let pm;
+                    while ((pm = parenRegex.exec(content)) !== null) {
+                        let off = parseFloat(pm[1]) || 0;
+                        let dur = parseFloat(pm[2]) || 0;
+                        let startSec = timeSec + (off / 1000.0);
+                        let endSec = startSec + (dur / 1000.0);
+                        let wText = pm[3];
+                        if (wText.length > 0) {
+                            words.push({ text: wText, start: startSec, end: endSec });
+                        }
+                    }
+                    if (words.length > 0) isWordSynced = true;
+                }
+
+                let mergedWords = (words.length > 0) ? root.mergeSyllableWords(words) : null;
+                let cleanText = "";
+                if (mergedWords && mergedWords.length > 0) {
+                    cleanText = mergedWords.map(w => w.text).join("").trim();
+                } else {
+                    cleanText = content.replace(/<[^>]+>/g, "").replace(/\([^)]+\)/g, "").trim();
+                }
+                if (cleanText.length === 0) cleanText = "♪";
+
+                if (root.isCreditOrMetadataLine(cleanText, lineDuration, timeSec)) {
+                    continue;
+                }
+
+                let lineEnd = (mergedWords && mergedWords.length > 0 && mergedWords[mergedWords.length - 1].end > 0)
+                    ? mergedWords[mergedWords.length - 1].end
+                    : (lineDuration > 0 ? timeSec + lineDuration : 0);
+
+                parsed.push({
+                    time: timeSec,
+                    endTime: lineEnd,
+                    text: cleanText,
+                    isWordSynced: isWordSynced && mergedWords && mergedWords.length > 0,
+                    words: isWordSynced ? mergedWords : null
+                });
+            }
+        }
+
+        if (parsed.length > 1) {
+            parsed.sort((a, b) => a.time - b.time);
+        }
+
+        for (let i = 0; i < parsed.length; i++) {
+            let p = parsed[i];
+            if (!p.endTime || p.endTime <= p.time) {
+                p.endTime = (i + 1 < parsed.length) ? parsed[i + 1].time : (p.time + 5.0);
+            }
+            if (p.isWordSynced && p.words && p.words.length > 0) {
+                let lastW = p.words[p.words.length - 1];
+                if (!lastW.end || lastW.end <= lastW.start) {
+                    lastW.end = p.endTime;
+                }
+            }
+        }
+
+        return parsed;
+    }
+
+    function parseLyricsResponse(data) {
+        if (!data) return;
+        let parsed = null;
+
+        if (data.lines && Array.isArray(data.lines) && data.lines.length > 0) {
+            parsed = data.lines;
+        }
+
+        if ((!parsed || parsed.length === 0) && data.syncedLyrics && data.syncedLyrics.length > 0) {
+            try {
+                parsed = root.parseLyricsString(data.syncedLyrics);
+            } catch(e) {}
+        }
+
+        root.hasUnsyncedLyrics = (!parsed || parsed.length === 0) && data.plainLyrics && data.plainLyrics.length > 0;
+        if (parsed && parsed.length > 0) {
             root.lyricLines = parsed;
+            root.hasWordSync = parsed.some(function(l) { return l.isWordSynced; });
             root.buildGroupIndex();
+        } else {
+            root.lyricLines = [];
+            root.lyricGroupIndex = [];
+            root.hasWordSync = false;
         }
     }
 
@@ -267,7 +612,8 @@ Singleton {
         let bus = (player.busName || "").toLowerCase();
         let isSpotify = id.includes("spotify") || entry.includes("spotify") || bus.includes("spotify");
         let isAudacious = id.includes("audacious") || entry.includes("audacious") || bus.includes("audacious");
-        return isSpotify || isAudacious;
+        let isKdeConnect = id.includes("kdeconnect") || entry.includes("kdeconnect") || bus.includes("kdeconnect");
+        return isSpotify || isAudacious || isKdeConnect || true;
     }
 
     function syncTrackChange() {
@@ -284,6 +630,7 @@ Singleton {
                 root.lyricLines = [];
                 root.lyricGroupIndex = [];
                 root.hasUnsyncedLyrics = false;
+                root.hasWordSync = false;
                 root.currentLyricLine = "";
                 root.currentLyricLineRich = "";
                 root.currentGroupStartIdx = -1;
@@ -404,7 +751,7 @@ Singleton {
     }
 
     Timer {
-        interval: 200
+        interval: root.hasWordSync ? 25 : 200
         repeat: true
         running: activePlayer?.playbackState === MprisPlaybackState.Playing && root.lyricLines.length > 0
         onTriggered: {
@@ -420,7 +767,10 @@ Singleton {
             }
 
             let currentPos = root.lastKnownPosition + elapsedSec;
-            let audioSyncPos = Math.max(0, currentPos + root.syncLeadSeconds);
+            // For word-by-word karaoke, words and lines synchronize precisely with audio playback (0s lead).
+            let lineSyncPos = Math.max(0, currentPos + (root.hasWordSync ? 0.0 : root.syncLeadSeconds));
+            let audioSyncPos = lineSyncPos;
+            let wordSyncPos = Math.max(0, currentPos);
 
             let lines = root.lyricLines;
             let groups = root.lyricGroupIndex;
@@ -429,8 +779,18 @@ Singleton {
 
             let currIdx = -1;
             for (let i = 0; i < lines.length; i++) {
-                if (audioSyncPos >= lines[i].time) {
+                if (lineSyncPos >= lines[i].time) {
                     currIdx = i;
+                } else {
+                    break;
+                }
+            }
+
+            // Anti-cut-off protection: Never jump to the next line before the current line's syllable animation finishes
+            while (currIdx > 0 && lines[currIdx - 1].isWordSynced) {
+                let prevEnd = lines[currIdx - 1].endTime || (lines[currIdx - 1].words && lines[currIdx - 1].words.length > 0 ? lines[currIdx - 1].words[lines[currIdx - 1].words.length - 1].end : 0);
+                if (prevEnd > 0 && currentPos < prevEnd) {
+                    currIdx--;
                 } else {
                     break;
                 }
@@ -445,23 +805,33 @@ Singleton {
                 let currGroup = groups[currIdx];
                 let baseText = currGroup.text;
 
-                // Sub-line split fade for multi-line groups
+                // Sub-line split fade for multi-line groups (with progressive word-by-word highlight)
                 let baseTextRich = "";
                 if (currGroup.startIdx < currGroup.endIdx) {
                     let parts = [];
                     for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
-                        let lineText = lines[m].text;
+                        let lObj = lines[m];
+                        let lineText = root.escapeXml(lObj.text);
                         if (m < currIdx) {
                             parts.push(`<font color="${root.colPastHex}">${lineText}</font>`);
                         } else if (m === currIdx) {
-                            parts.push(`<font color="${root.colActiveHex}">${lineText}</font>`);
+                            if (lObj.isWordSynced && lObj.words && lObj.words.length > 0) {
+                                parts.push(root.generateWordRichText(lObj, wordSyncPos));
+                            } else {
+                                parts.push(`<font color="${root.colActiveHex}">${lineText}</font>`);
+                            }
                         } else {
                             parts.push(`<font color="${root.colUpcomingHex}">${lineText}</font>`);
                         }
                     }
                     baseTextRich = parts.join(`<font color="${root.colBulletHex}"> • </font>`);
                 } else {
-                    baseTextRich = `<font color="${root.colActiveHex}">${baseText}</font>`;
+                    let lObj = lines[currGroup.startIdx];
+                    if (lObj && lObj.isWordSynced && lObj.words && lObj.words.length > 0) {
+                        baseTextRich = root.generateWordRichText(lObj, wordSyncPos);
+                    } else {
+                        baseTextRich = `<font color="${root.colActiveHex}">${root.escapeXml(baseText)}</font>`;
+                    }
                 }
 
                 let isSingleLine = currGroup.startIdx === currGroup.endIdx;
@@ -551,39 +921,34 @@ Singleton {
                                 newCurrentLineRich = root.trackInfoRich || "";
                             }
                         }
-                    } else if (remaining > 0) {
-                        let gap = nextTime - lines[currGroup.endIdx].time;
-                        let timeSinceEnd = audioSyncPos - lines[currGroup.endIdx].time;
+                    } else {
+                        let groupEndTime = lines[currGroup.endIdx].endTime || (lines[currGroup.endIdx].time + 3.0);
+                        let isGroupFinished = wordSyncPos >= groupEndTime;
+                        let gap = nextTime - groupEndTime;
+                        let timeSinceEnd = wordSyncPos - groupEndTime;
                         let waitingHex = (currGroup.startIdx < currGroup.endIdx)
                             ? root.colWaitingGroupHex
                             : root.colWaitingSingleHex;
-                        if (gap > 7.0 && timeSinceEnd > 4.0) {
+
+                        // Only show countdown timer if the current line has ACTUALLY finished vocalizing
+                        // AND there is a substantial instrumental gap (> 5s) AND 2.5s have passed since singing finished!
+                        if (remaining > 0 && isGroupFinished && gap > 5.0 && timeSinceEnd > 2.5) {
                             newCurrentLine = `${baseText} (♪ ${remaining}s)`;
-                            // Line has ended and is waiting in gap countdown: remove boldness and soften past line
-                            newCurrentLineRich = `<font color="${waitingHex}">${baseText}</font> <font color="${root.colTimerHex}">(♪ ${remaining}s)</font>`;
-                        } else {
+                            newCurrentLineRich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font> <font color="${root.colTimerHex}">(♪ ${remaining}s)</font>`;
+                        } else if (remaining === 0 && isGroupFinished && gap > 5.0 && timeSinceEnd > 2.5) {
                             newCurrentLine = baseText;
-                            newCurrentLineRich = baseTextRich;
-                        }
-                    } else {
-                        // remaining == 0: countdown done, lyric hasn't started yet (sub-200ms gap)
-                        // Dim the line so it doesn't flash full-brightness before the next lyric
-                        let gap = nextTime - lines[currGroup.endIdx].time;
-                        let timeSinceEnd = audioSyncPos - lines[currGroup.endIdx].time;
-                        if (gap > 7.0 && timeSinceEnd > 4.0) {
-                            let waitingHex = (currGroup.startIdx < currGroup.endIdx)
-                                ? root.colWaitingGroupHex
-                                : root.colWaitingSingleHex;
-                            newCurrentLine = baseText;
-                            newCurrentLineRich = `<font color="${waitingHex}">${baseText}</font>`;
+                            newCurrentLineRich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font>`;
                         } else {
+                            // Actively singing OR brief gap before next line: NEVER interrupt the lyric animation!
                             newCurrentLine = baseText;
                             newCurrentLineRich = baseTextRich;
                         }
                     }
                 } else {
                     let trackLen = activePlayer?.length || 0;
-                    let timeSinceLastLyric = audioSyncPos - lines[currGroup.endIdx].time;
+                    let groupEndTime = lines[currGroup.endIdx].endTime || (lines[currGroup.endIdx].time + 3.0);
+                    let isGroupFinished = wordSyncPos >= groupEndTime;
+                    let timeSinceLastLyric = wordSyncPos - groupEndTime;
 
                     if (currGroup.text === "♪") {
                         // Trailing instrumental marker at end of track: show Outro until song finishes
@@ -607,24 +972,23 @@ Singleton {
                         }
                     } else {
                         // Real lyric at end of track:
-                        // Total outro duration after this line completes (~5s singing window)
-                        let hasSignificantOutro = trackLen > 0 && (trackLen - (lines[currGroup.endIdx].time + 5.0)) > 6.0;
+                        let hasSignificantOutro = trackLen > 0 && (trackLen - groupEndTime) > 6.0;
 
-                        if (hasSignificantOutro && timeSinceLastLyric >= 5.0) {
+                        if (isGroupFinished && hasSignificantOutro && timeSinceLastLyric >= 3.5) {
                             // Singer is done and substantial instrumental outro remains: show Outro and keep it
                             newCurrentLine = root.trackInfoPlain ? `${root.trackInfoPlain} (Outro)` : "Outro";
                             newCurrentLineRich = root.trackInfoPlain
                                 ? `${root.trackInfoRich} <font color="${root.colTimerHex}">(Outro)</font>`
                                 : `<font color="${root.colTimerHex}">Outro</font>`;
-                        } else if (timeSinceLastLyric >= 5.0) {
-                            // Song ends shortly after: keep holding the last lyric muted
+                        } else if (isGroupFinished && timeSinceLastLyric >= 3.5) {
+                            // Song ends shortly after: keep holding the completed lyric muted
                             let waitingHex = (currGroup.startIdx < currGroup.endIdx)
                                 ? root.colWaitingGroupHex
                                 : root.colWaitingSingleHex;
                             newCurrentLine = baseText;
-                            newCurrentLineRich = `<font color="${waitingHex}">${baseText}</font>`;
+                            newCurrentLineRich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font>`;
                         } else {
-                            // Actively being sung
+                            // Actively being sung or just finished: keep full animated text!
                             newCurrentLine = baseText;
                             newCurrentLineRich = baseTextRich;
                         }
