@@ -988,12 +988,16 @@ Singleton {
 
             if (!groups || groups.length !== lines.length) return;
 
+            let firstLineLead = 1.0;
             let currIdx = -1;
-            for (let i = 0; i < lines.length; i++) {
-                if (lineSyncPos >= lines[i].time) {
-                    currIdx = i;
-                } else {
-                    break;
+            if (lines.length > 0 && lineSyncPos >= Math.max(0, lines[0].time - firstLineLead)) {
+                currIdx = 0;
+                for (let i = 1; i < lines.length; i++) {
+                    if (lineSyncPos >= lines[i].time) {
+                        currIdx = i;
+                    } else {
+                        break;
+                    }
                 }
             }
 
@@ -1071,7 +1075,9 @@ Singleton {
                         let lObj = lines[m];
                         partsDim.push(root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex));
                         partsLit.push(root.formatLineRich(lObj.text, root.colLitHex, root.colBgLitHex));
-                        if (m < currIdx) {
+                        if (lineSyncPos < lines[m].time) {
+                            partsRich.push(root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex));
+                        } else if (m < currIdx) {
                             partsRich.push(root.formatLineRich(lObj.text, root.colPastHex, root.colBgPastHex));
                         } else if (m === currIdx) {
                             partsRich.push(root.formatLineRich(lObj.text, root.colLitHex, root.colBgLitHex));
@@ -1085,7 +1091,7 @@ Singleton {
                 } else {
                     baseTextDim = root.formatLineRich(baseText, root.colUpcomingHex, root.colBgUpcomingHex);
                     baseTextLit = root.formatLineRich(baseText, root.colLitHex, root.colBgLitHex);
-                    baseTextRich = baseTextLit;
+                    baseTextRich = (lineSyncPos < lines[currGroup.startIdx].time) ? baseTextDim : baseTextLit;
                 }
 
                 let totalLyricW = 0;
@@ -1205,22 +1211,42 @@ Singleton {
                     }
                 } else {
                     let trackLen = activePlayer?.length || 0;
-                    let groupEndTime = lines[currGroup.endIdx].endTime || (lines[currGroup.endIdx].time + 3.0);
+                    let lastLineHoldSec = 4.5;
+                    let defaultLineDuration = 4.0;
+                    let groupEndTime = lines[currGroup.endIdx].endTime || (lines[currGroup.endIdx].time + defaultLineDuration);
                     let isGroupFinished = wordSyncPos >= groupEndTime;
                     let timeSinceLastLyric = wordSyncPos - groupEndTime;
 
                     if (currGroup.text === "♪") {
                         // Trailing instrumental marker at end of track: show Outro until song finishes
-                        if (trackLen > 0) {
+                        // But if last real lyric finished recently, hold it for lastLineHoldSec first!
+                        let lastReal = "";
+                        let lastRealEnd = 0;
+                        for (let r = currGroup.startIdx - 1; r >= 0; r--) {
+                            if (lines[r].text !== "♪") {
+                                lastReal = lines[r].text;
+                                lastRealEnd = lines[r].endTime || (lines[r].time + defaultLineDuration);
+                                break;
+                            }
+                        }
+
+                        let timeSinceLastReal = lastRealEnd > 0 ? (wordSyncPos - lastRealEnd) : 999;
+                        if (lastReal && timeSinceLastReal < lastLineHoldSec) {
+                            let waitingHex = root.colWaitingSingleHex;
+                            newCurrentLine = lastReal;
+                            newCurrentLineRich = `<font color="${waitingHex}">${root.escapeXml(lastReal)}</font>`;
+                            newCurrentLineDim = newCurrentLineRich;
+                            newCurrentLineLit = newCurrentLineRich;
+                            newProgress = 1.0;
+                        } else if (trackLen > 0) {
                             newCurrentLine = root.trackInfoPlain ? `${root.trackInfoPlain} (Outro)` : "Outro";
                             newCurrentLineRich = root.trackInfoPlain
                                 ? `${root.trackInfoRich} <font color="${root.colTimerHex}">(Outro)</font>`
                                 : `<font color="${root.colTimerHex}">Outro</font>`;
+                            newCurrentLineDim = newCurrentLineRich;
+                            newCurrentLineLit = newCurrentLineRich;
+                            newProgress = 0.0;
                         } else {
-                            let lastReal = "";
-                            for (let r = currGroup.startIdx - 1; r >= 0; r--) {
-                                if (lines[r].text !== "♪") { lastReal = lines[r].text; break; }
-                            }
                             if (lastReal) {
                                 newCurrentLine = lastReal;
                                 newCurrentLineRich = `<font color="${root.colWaitingSingleHex}">${lastReal}</font>`;
@@ -1228,15 +1254,15 @@ Singleton {
                                 newCurrentLine = root.trackInfoPlain || "";
                                 newCurrentLineRich = root.trackInfoRich || "";
                             }
+                            newCurrentLineDim = newCurrentLineRich;
+                            newCurrentLineLit = newCurrentLineRich;
+                            newProgress = 0.0;
                         }
-                        newCurrentLineDim = newCurrentLineRich;
-                        newCurrentLineLit = newCurrentLineRich;
-                        newProgress = 0.0;
                     } else {
                         // Real lyric at end of track:
                         let hasSignificantOutro = trackLen > 0 && (trackLen - groupEndTime) > 6.0;
 
-                        if (isGroupFinished && hasSignificantOutro && timeSinceLastLyric >= 3.5) {
+                        if (isGroupFinished && hasSignificantOutro && timeSinceLastLyric >= lastLineHoldSec) {
                             // Singer is done and substantial instrumental outro remains: show Outro and keep it
                             newCurrentLine = root.trackInfoPlain ? `${root.trackInfoPlain} (Outro)` : "Outro";
                             newCurrentLineRich = root.trackInfoPlain
@@ -1245,7 +1271,7 @@ Singleton {
                             newCurrentLineDim = newCurrentLineRich;
                             newCurrentLineLit = newCurrentLineRich;
                             newProgress = 0.0;
-                        } else if (isGroupFinished && timeSinceLastLyric >= 3.5) {
+                        } else if (isGroupFinished && timeSinceLastLyric >= lastLineHoldSec) {
                             // Song ends shortly after: keep holding the completed lyric muted
                             let waitingHex = (currGroup.startIdx < currGroup.endIdx)
                                 ? root.colWaitingGroupHex
@@ -1267,7 +1293,7 @@ Singleton {
             } else if (lines.length > 0) {
                 let firstGroup = groups[0];
                 newNextLine = firstGroup.text;
-                let remaining = Math.max(0, Math.ceil(lines[0].time - audioSyncPos));
+                let remaining = Math.max(0, Math.ceil(lines[0].time - firstLineLead - audioSyncPos));
                 if (remaining > 0) {
                     if (root.trackInfoPlain) {
                         newCurrentLine = `${root.trackInfoPlain} (Intro ♪ ${remaining}s)`;
