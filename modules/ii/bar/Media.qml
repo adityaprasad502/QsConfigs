@@ -214,7 +214,7 @@ Item {
                 if (root.hasLyrics) {
                     return LyricsService.currentLyricLineRich || LyricsService.currentLyricLine;
                 }
-                let artistStr = activePlayer?.trackArtist || "";
+                let artistStr = MprisController.getPlayerArtists(activePlayer);
                 let baseInfo = `${cleanedTitle}${artistStr ? ' • ' + artistStr : ''}`;
                 if (LyricsService.isSupportedPlayer(activePlayer)) {
                     if (LyricsService.loading) {

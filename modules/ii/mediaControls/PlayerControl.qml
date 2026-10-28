@@ -318,7 +318,7 @@ Item { // Player instance
 
                     readonly property bool isOverflowing: width > 0 && trackArtistText.implicitWidth > width + 5
                     readonly property string rawSubtitle: {
-                        let artist = root.player?.trackArtist || "";
+                        let artist = MprisController.getPlayerArtists(root.player);
                         let album = root.player?.trackAlbum || "";
                         let title = root.player?.trackTitle || "";
                         if (artist && album && album !== title && !title.includes(album) && artist !== album && !artist.includes(album)) {
@@ -414,7 +414,7 @@ Item { // Player instance
                         maximumLineCount: 1
                         visible: true
                         text: {
-                            if (!LyricsService.isSupportedPlayer(root.player)) return "";
+                            if (root.player !== LyricsService.activePlayer || !LyricsService.isSupportedPlayer(root.player)) return "";
                             if (LyricsService.lyricLines.length > 0) return LyricsService.nextLyricLine;
                             if (LyricsService.loading) return "Fetching lyrics…";
                             return "No lyrics available";

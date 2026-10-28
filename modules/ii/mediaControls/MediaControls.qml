@@ -25,6 +25,7 @@ Scope {
     property list<real> visualizerPoints: []
 
     function filterDuplicatePlayers(players) {
+        if (!players || !players.length) return [];
         let filtered = [];
         let used = new Set();
 
@@ -32,26 +33,61 @@ Scope {
             if (used.has(i))
                 continue;
             let p1 = players[i];
-            let group = [i];
+            if (!p1) continue;
 
-            // Find duplicates by trackTitle prefix
+            let title1 = (p1.trackTitle || "").trim().toLowerCase();
+            let artist1 = (p1.trackArtist || "").trim();
+            let isPlaying1 = p1.isPlaying || p1.playbackState === MprisPlaybackState.Playing;
+            if (!isPlaying1 && (title1 === "" || title1 === "untitled") && artist1 === "") {
+                continue;
+            }
+
+            let group = [i];
+            let cTitle1 = StringUtils.cleanMusicTitle(p1.trackTitle).toLowerCase();
+
             for (let j = i + 1; j < players.length; ++j) {
                 let p2 = players[j];
-                let titleMatch = p1.trackTitle && p2.trackTitle && p1.trackTitle.length > 2 && (p1.trackTitle.includes(p2.trackTitle) || p2.trackTitle.includes(p1.trackTitle));
-                let timeMatch = p1.length > 10 && Math.abs(p1.position - p2.position) <= 2 && Math.abs(p1.length - p2.length) <= 2;
+                if (!p2) continue;
+                let cTitle2 = StringUtils.cleanMusicTitle(p2.trackTitle).toLowerCase();
+                let titleMatch = cTitle1 && cTitle2 && (cTitle1 === cTitle2 || (cTitle1.length > 3 && (cTitle1.includes(cTitle2) || cTitle2.includes(cTitle1))));
+                let timeMatch = p1.length > 5 && p2.length > 5 && Math.abs(p1.length - p2.length) <= 3 && Math.abs(p1.position - p2.position) <= 3;
                 if (titleMatch || timeMatch) {
                     group.push(j);
                 }
             }
 
-            // Pick the one with non-empty trackArtUrl, or fallback to the first
-            let chosenIdx = group.find(idx => players[idx].trackArtUrl && players[idx].trackArtUrl.length > 0);
-            if (chosenIdx === undefined)
-                chosenIdx = group[0];
+            let bestIdx = group[0];
+            let bestScore = -1;
+            for (let g = 0; g < group.length; g++) {
+                let idx = group[g];
+                let p = players[idx];
+                let score = 0;
+                if (p.isPlaying || p.playbackState === MprisPlaybackState.Playing) score += 100;
+                if (p.trackArtUrl && p.trackArtUrl.length > 0) score += 50;
+                if (!((p.dbusName || "").toLowerCase().includes("kdeconnect"))) score += 30;
+                if (p.length > 0) score += 20;
+                if (p.trackArtist && p.trackArtist.length > 0) score += 10;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIdx = idx;
+                }
+            }
 
-            filtered.push(players[chosenIdx]);
+            filtered.push(players[bestIdx]);
             group.forEach(idx => used.add(idx));
         }
+
+        if (filtered.length === 0 && players.length > 0) {
+            filtered.push(root.activePlayer ?? players[0]);
+        }
+
+        filtered.sort((a, b) => {
+            let aPlaying = a.isPlaying || a.playbackState === MprisPlaybackState.Playing;
+            let bPlaying = b.isPlaying || b.playbackState === MprisPlaybackState.Playing;
+            if (aPlaying !== bPlaying) return aPlaying ? -1 : 1;
+            return 0;
+        });
+
         return filtered;
     }
 

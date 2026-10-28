@@ -10,6 +10,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Mpris
 import qs.modules.common
+import qs.modules.common.functions
 
 /**
  * A service that provides easy access to the active Mpris player.
@@ -29,16 +30,33 @@ Singleton {
 		p => p.dbusName?.startsWith('org.mpris.MediaPlayer2.plasma-browser-integration')
 	)
 	function isRealPlayer(player) {
+        if (!player) return false;
         if (!Config.options.media.filterDuplicatePlayers) {
             return true;
         }
-        return (
-            // Remove native browser buses only if plasma-browser-integration is actually active on D-Bus
-            !(hasActivePlasmaIntegration && player.dbusName.startsWith('org.mpris.MediaPlayer2.firefox')) && !(hasActivePlasmaIntegration && player.dbusName.startsWith('org.mpris.MediaPlayer2.chromium')) &&
-            // playerctld just copies other buses and we don't need duplicates
-            !player.dbusName?.startsWith('org.mpris.MediaPlayer2.playerctld') &&
-            // Non-instance mpd bus
-            !(player.dbusName?.endsWith('.mpd') && !player.dbusName.endsWith('MediaPlayer2.mpd')));
+
+        let dbus = (player.dbusName || "").toLowerCase();
+
+        if (hasActivePlasmaIntegration && (dbus.startsWith('org.mpris.mediaplayer2.firefox') || dbus.startsWith('org.mpris.mediaplayer2.chromium'))) {
+            return false;
+        }
+
+        if (dbus.startsWith('org.mpris.mediaplayer2.playerctld')) {
+            return false;
+        }
+
+        if (dbus.endsWith('.mpd') && !dbus.endsWith('mediaplayer2.mpd')) {
+            return false;
+        }
+
+        let title = (player.trackTitle || "").trim().toLowerCase();
+        let artist = (player.trackArtist || "").trim();
+        let isPlaying = player.isPlaying || player.playbackState === MprisPlaybackState.Playing;
+        if (!isPlaying && (title === "" || title === "untitled") && artist === "") {
+            return false;
+        }
+
+        return true;
     }
 
 	// Original stuff from fox below
@@ -92,6 +110,14 @@ Singleton {
 			root.updateTrack();
 		}
 
+		function onTrackArtistChanged() {
+			root.updateTrack();
+		}
+
+		function onTrackArtistsChanged() {
+			root.updateTrack();
+		}
+
 		function onTrackArtUrlChanged() {
 			// console.log("arturl:", activePlayer.trackArtUrl)
 			// root.updateTrack();
@@ -108,13 +134,71 @@ Singleton {
 
 	onActivePlayerChanged: this.updateTrack();
 
+	function getPlayerArtists(player) {
+		if (!player) return "";
+
+		let list = [];
+
+		let xesam = player.metadata ? player.metadata["xesam:artist"] : null;
+		if (Array.isArray(xesam) && xesam.length > 0) {
+			for (let i = 0; i < xesam.length; i++) {
+				let a = String(xesam[i] || "").trim();
+				let cleaned = StringUtils.cleanMusicArtist(a) || a;
+				if (cleaned.length > 0 && !list.includes(cleaned)) {
+					list.push(cleaned);
+				}
+			}
+		} else if (Array.isArray(player.trackArtists) && player.trackArtists.length > 0) {
+			for (let i = 0; i < player.trackArtists.length; i++) {
+				let a = String(player.trackArtists[i] || "").trim();
+				let cleaned = StringUtils.cleanMusicArtist(a) || a;
+				if (cleaned.length > 0 && !list.includes(cleaned)) {
+					list.push(cleaned);
+				}
+			}
+		} else {
+			let single = (typeof player.trackArtists === "string" && player.trackArtists.trim().length > 0)
+				? player.trackArtists
+				: (player.trackArtist || "");
+			if (single) {
+				let parts = single.split(/\s*(?:,|&|\band\b|\/|;)\s*/i).map(s => s.trim()).filter(Boolean);
+				if (parts.length > 1) {
+					for (let i = 0; i < parts.length; i++) {
+						let cleaned = StringUtils.cleanMusicArtist(parts[i]) || parts[i];
+						if (cleaned.length > 0 && !list.includes(cleaned)) {
+							list.push(cleaned);
+						}
+					}
+				} else {
+					let cleaned = StringUtils.cleanMusicArtist(single) || single;
+					if (cleaned.length > 0) list.push(cleaned);
+				}
+			}
+		}
+
+		let titleFeat = StringUtils.extractFeaturedArtists(player.trackTitle);
+		for (let f = 0; f < titleFeat.length; f++) {
+			let fa = StringUtils.cleanMusicArtist(titleFeat[f]) || titleFeat[f];
+			let exists = list.some(item => {
+				let iLower = item.toLowerCase();
+				let fLower = fa.toLowerCase();
+				return iLower === fLower || iLower.includes(fLower) || fLower.includes(iLower);
+			});
+			if (!exists && fa.length > 0) {
+				list.push(fa);
+			}
+		}
+
+		return list.join(", ");
+	}
+
 	function updateTrack() {
 		//console.log(`update: ${this.activePlayer?.trackTitle ?? ""} : ${this.activePlayer?.trackArtists}`)
 		this.activeTrack = {
 			uniqueId: this.activePlayer?.uniqueId ?? 0,
 			artUrl: this.activePlayer?.trackArtUrl ?? "",
 			title: this.activePlayer?.trackTitle || Translation.tr("Unknown Title"),
-			artist: this.activePlayer?.trackArtist || Translation.tr("Unknown Artist"),
+			artist: root.getPlayerArtists(this.activePlayer) || Translation.tr("Unknown Artist"),
 			album: this.activePlayer?.trackAlbum || Translation.tr("Unknown Album"),
 		};
 

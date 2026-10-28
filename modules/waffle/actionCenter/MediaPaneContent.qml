@@ -89,7 +89,7 @@ Rectangle {
             WText {
                 Layout.fillWidth: true
                 elide: Text.ElideRight
-                text: root.activePlayer?.trackArtist || Translation.tr("Unknown Artist")
+                text: MprisController.activeTrack?.artist || MprisController.getPlayerArtists(root.activePlayer) || Translation.tr("Unknown Artist")
             }
         }
 

@@ -35,7 +35,8 @@ def norm(s):
 # Provider 1: KRC
 # ==============================================================================
 def fetch_p1(title, artist="", target_duration=0):
-    query = f"{title} {artist}".strip()
+    primary_artist = re.split(r"[,;&/]+", artist)[0].strip() if artist else ""
+    query = f"{title} {primary_artist}".strip()
     if not query:
         return None
 
@@ -51,8 +52,10 @@ def fetch_p1(title, artist="", target_duration=0):
     if not info:
         return None
 
-    target_artist_norm = norm(artist)
+    target_artists = [norm(a) for a in re.split(r"[,;&/]+", artist) if len(norm(a)) > 1] if artist else []
     target_title_norm = norm(title)
+    if not target_title_norm:
+        return None
 
     best_song = None
     best_score = -999999
@@ -68,22 +71,30 @@ def fetch_p1(title, artist="", target_duration=0):
         s_artist_norm = norm(s_artist)
         s_title_norm = norm(s_title)
 
-        score = 0
-        if target_artist_norm:
-            if s_artist_norm == target_artist_norm:
-                score += 60
-            elif target_artist_norm in s_artist_norm:
-                score += 30
-            elif s_artist_norm in target_artist_norm:
-                score += 20
-            else:
-                score -= 30
+        title_matches = False
+        if s_title_norm == target_title_norm:
+            title_matches = True
+        elif len(target_title_norm) > 2 and (target_title_norm in s_title_norm or s_title_norm in target_title_norm):
+            title_matches = True
 
-        if target_title_norm:
-            if s_title_norm == target_title_norm:
-                score += 50
-            elif target_title_norm in s_title_norm or s_title_norm in target_title_norm:
-                score += 25
+        if not title_matches:
+            continue
+
+        score = 50 if s_title_norm == target_title_norm else 25
+
+        if target_artists:
+            matched_artist = False
+            for ta in target_artists:
+                if s_artist_norm == ta:
+                    score += 60
+                    matched_artist = True
+                    break
+                elif ta in s_artist_norm or s_artist_norm in ta:
+                    score += 30
+                    matched_artist = True
+                    break
+            if not matched_artist:
+                score -= 20
 
         if target_duration > 0 and dur > 0:
             diff = abs(dur - target_duration)
@@ -100,8 +111,8 @@ def fetch_p1(title, artist="", target_duration=0):
             best_score = score
             best_song = s
 
-    if not best_song:
-        best_song = info[0]
+    if not best_song or best_score < 25:
+        return None
 
     song_hash = best_song.get("hash")
     if not song_hash:
@@ -126,16 +137,20 @@ def fetch_p1(title, artist="", target_duration=0):
         if c.get("krctype") == 1:
             score += 100
         c_singer = norm(c.get("singer", ""))
-        if target_artist_norm and c_singer == target_artist_norm:
-            score += 50
-        elif target_artist_norm and (target_artist_norm in c_singer or c_singer in target_artist_norm):
-            score += 25
+        if target_artists:
+            for ta in target_artists:
+                if c_singer == ta:
+                    score += 50
+                    break
+                elif ta in c_singer or c_singer in ta:
+                    score += 25
+                    break
         if score > best_cand_score:
             best_cand_score = score
             best_cand = c
 
-    if not best_cand:
-        best_cand = candidates[0]
+    if not best_cand or best_cand_score < 50:
+        return None
 
     cand_id = best_cand.get("id")
     accesskey = best_cand.get("accesskey")
@@ -416,7 +431,8 @@ def _normalize_qrc(raw_qrc):
     return "\n".join(out)
 
 def fetch_p2(title, artist="", target_duration=0):
-    query = f"{title} {artist}".strip()
+    primary_artist = re.split(r"[,;&/]+", artist)[0].strip() if artist else ""
+    query = f"{title} {primary_artist}".strip()
     if not query:
         return None
 
@@ -444,8 +460,10 @@ def fetch_p2(title, artist="", target_duration=0):
     if not songs:
         return None
 
-    target_artist_norm = norm(artist)
+    target_artists = [norm(a) for a in re.split(r"[,;&/]+", artist) if len(norm(a)) > 1] if artist else []
     target_title_norm = norm(title)
+    if not target_title_norm:
+        return None
 
     best_song = None
     best_score = -999999
@@ -463,22 +481,30 @@ def fetch_p2(title, artist="", target_duration=0):
         s_title_norm = norm(s_name)
         s_artist_norm = norm(singers)
 
-        score = 0
-        if target_artist_norm:
-            if s_artist_norm == target_artist_norm:
-                score += 60
-            elif target_artist_norm in s_artist_norm:
-                score += 30
-            elif s_artist_norm in target_artist_norm:
-                score += 20
-            else:
-                score -= 30
+        title_matches = False
+        if s_title_norm == target_title_norm:
+            title_matches = True
+        elif len(target_title_norm) > 2 and (target_title_norm in s_title_norm or s_title_norm in target_title_norm):
+            title_matches = True
 
-        if target_title_norm:
-            if s_title_norm == target_title_norm:
-                score += 50
-            elif target_title_norm in s_title_norm or s_title_norm in target_title_norm:
-                score += 25
+        if not title_matches:
+            continue
+
+        score = 50 if s_title_norm == target_title_norm else 25
+
+        if target_artists:
+            matched_artist = False
+            for ta in target_artists:
+                if s_artist_norm == ta:
+                    score += 60
+                    matched_artist = True
+                    break
+                elif ta in s_artist_norm or s_artist_norm in ta:
+                    score += 30
+                    matched_artist = True
+                    break
+            if not matched_artist:
+                score -= 20
 
         if target_duration > 0 and s_dur > 0:
             diff = abs(s_dur - target_duration)
@@ -495,8 +521,8 @@ def fetch_p2(title, artist="", target_duration=0):
             best_score = score
             best_song = s
 
-    if not best_song:
-        best_song = songs[0]
+    if not best_song or best_score < 25:
+        return None
 
     song_id = best_song.get("id")
     song_mid = best_song.get("mid")
@@ -568,7 +594,8 @@ def _normalize_yrc(raw_yrc):
     return "\n".join(out)
 
 def fetch_p3(title, artist="", target_duration=0):
-    query = f"{title} {artist}".strip()
+    primary_artist = re.split(r"[,;&/]+", artist)[0].strip() if artist else ""
+    query = f"{title} {primary_artist}".strip()
     if not query:
         return None
 
@@ -585,8 +612,10 @@ def fetch_p3(title, artist="", target_duration=0):
     if not songs:
         return None
 
-    target_artist_norm = norm(artist)
+    target_artists = [norm(a) for a in re.split(r"[,;&/]+", artist) if len(norm(a)) > 1] if artist else []
     target_title_norm = norm(title)
+    if not target_title_norm:
+        return None
 
     best_song = None
     best_score = -999999
@@ -603,22 +632,30 @@ def fetch_p3(title, artist="", target_duration=0):
         s_title_norm = norm(s_name)
         s_artist_norm = norm(singers)
 
-        score = 0
-        if target_artist_norm:
-            if s_artist_norm == target_artist_norm:
-                score += 60
-            elif target_artist_norm in s_artist_norm:
-                score += 30
-            elif s_artist_norm in target_artist_norm:
-                score += 20
-            else:
-                score -= 30
+        title_matches = False
+        if s_title_norm == target_title_norm:
+            title_matches = True
+        elif len(target_title_norm) > 2 and (target_title_norm in s_title_norm or s_title_norm in target_title_norm):
+            title_matches = True
 
-        if target_title_norm:
-            if s_title_norm == target_title_norm:
-                score += 50
-            elif target_title_norm in s_title_norm or s_title_norm in target_title_norm:
-                score += 25
+        if not title_matches:
+            continue
+
+        score = 50 if s_title_norm == target_title_norm else 25
+
+        if target_artists:
+            matched_artist = False
+            for ta in target_artists:
+                if s_artist_norm == ta:
+                    score += 60
+                    matched_artist = True
+                    break
+                elif ta in s_artist_norm or s_artist_norm in ta:
+                    score += 30
+                    matched_artist = True
+                    break
+            if not matched_artist:
+                score -= 20
 
         if target_duration > 0 and s_dur > 0:
             diff = abs(s_dur - target_duration)
@@ -635,8 +672,8 @@ def fetch_p3(title, artist="", target_duration=0):
             best_score = score
             best_song = s
 
-    if not best_song:
-        best_song = songs[0]
+    if not best_song or best_score < 25:
+        return None
 
     song_id = best_song.get("id")
     if not song_id:
@@ -673,19 +710,22 @@ def is_metadata_line(text, time_ms, title="", artist="", has_syllables=False):
         r"track\s*[:：\-]|artist\s*[:：\-]|album\s*[:：\-]|synced by|lrc by|source\s*[:：]|"
         r"mixing( by)?|mixed by|mastering( by)?|mastered by|recorded?( by)?|recording( by)?|"
         r"engineered by|publisher|label|qqmusic|kugou|netease|163\.com|lrclib|"
-        r"作\s*词|作\s*曲|编\s*曲|制\s*作|演唱|词曲|词\s*[:：]|曲\s*[:：]|"
-        r"录音|混音|母带|监制|统筹|企划|出品|发行|后期|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|原唱|翻唱|伴奏|配唱|乐器)",
+        r"作\s*词|作\s*曲|编\s*曲|制\s*作|监\s*制|录\s*音|混\s*音|母\s*带|演唱|词曲|词\s*[:：]|曲\s*[:：]|"
+        r"统筹|企划|出品|发行|后期|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|原唱|翻唱|伴奏|配唱|乐器|"
+        r"专\s*辑|歌\s*手|歌\s*名|曲\s*名)",
         re.I
     )
     if credit_re.search(t):
         return True
-    if not has_syllables and time_ms < 12000:
+    if time_ms < 15000:
         nt = norm(t)
         ntitle = norm(title)
         nartist = norm(artist)
         if ntitle and nartist and (ntitle in nt and nartist in nt):
             return True
-        if re.match(r"^.+?\s*[-–—]\s*.+?$", t) and ((ntitle and ntitle in nt) or (nartist and nartist in nt)):
+        if re.match(r"^.+?\s*[-–—\/:]\s*.+?$", t) and ((ntitle and ntitle in nt) or (nartist and nartist in nt)):
+            return True
+        if nartist and nt == nartist:
             return True
     return False
 
@@ -700,14 +740,17 @@ def clean_syllables(lyrics, title="", artist=""):
         line_str = line.strip()
         if not line_str:
             continue
-        m_hdr = re.match(r"^\[(\d+)(?:,(\d+))?\](.*)", line_str)
+        m_hdr = re.match(r"^\[(?:(\d+):(\d+(?:\.\d+)?)|(\d+)(?:,(\d+))?)\](.*)", line_str)
         if not m_hdr:
             if line_str.startswith("[offset:"):
                 cleaned.append(line_str)
             continue
 
-        time_ms = int(m_hdr.group(1))
-        rest = m_hdr.group(3)
+        if m_hdr.group(1) is not None:
+            time_ms = int(float(m_hdr.group(1)) * 60000 + float(m_hdr.group(2)) * 1000)
+        else:
+            time_ms = int(m_hdr.group(3))
+        rest = m_hdr.group(5)
         has_syl = "<" in rest and ">" in rest
         plain_text = re.sub(r"<[^>]+>", "", rest)
         plain_text = re.sub(r"\([^)]+\)", "", plain_text).strip()

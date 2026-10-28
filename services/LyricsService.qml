@@ -219,13 +219,13 @@ Singleton {
     readonly property string trackInfoPlain: {
         let rawTitle = activePlayer?.trackTitle || "";
         let tName = StringUtils.cleanMusicTitle(rawTitle) || rawTitle;
-        let tArtist = activePlayer?.trackArtist || "";
+        let tArtist = MprisController.getPlayerArtists(activePlayer);
         return (tName && tArtist) ? `${tName} • ${tArtist}` : (tName || tArtist);
     }
     readonly property string trackInfoRich: {
         let rawTitle = activePlayer?.trackTitle || "";
         let tName = StringUtils.cleanMusicTitle(rawTitle) || rawTitle;
-        let tArtist = activePlayer?.trackArtist || "";
+        let tArtist = MprisController.getPlayerArtists(activePlayer);
         return (tName && tArtist)
             ? `<font color="${root.colActiveHex}">${tName}</font><font color="${root.colBulletHex}"> • </font><font color="${root.colActiveHex}">${tArtist}</font>`
             : `<font color="${root.colActiveHex}">${tName || tArtist}</font>`;
@@ -250,12 +250,28 @@ Singleton {
             let rTrack = root.normalizeStr(r.trackName);
             let rArtist = root.normalizeStr(r.artistName);
 
+            let titleMatches = (rTrack === normTrack) || (normTrack.length > 2 && (rTrack.includes(normTrack) || normTrack.includes(rTrack)));
+            if (!titleMatches) continue;
+
             let score = 0;
             if (rTrack === normTrack) score += 50;
-            else if (normTrack.length > 2 && (rTrack.includes(normTrack) || normTrack.includes(rTrack))) score += 25;
+            else score += 25;
 
-            if (rArtist === normArtist) score += 40;
-            else if (!normArtist || rArtist.includes(normArtist) || normArtist.includes(rArtist)) score += 20;
+            if (normArtist) {
+                if (rArtist === normArtist) {
+                    score += 40;
+                } else if (rArtist.includes(normArtist) || normArtist.includes(rArtist)) {
+                    score += 20;
+                } else {
+                    let subArtists = targetArtist.split(/[,;&\/]+/).map(a => root.normalizeStr(a)).filter(a => a.length > 1);
+                    for (let a = 0; a < subArtists.length; a++) {
+                        if (rArtist.includes(subArtists[a]) || subArtists[a].includes(rArtist)) {
+                            score += 25;
+                            break;
+                        }
+                    }
+                }
+            }
 
             if (targetDuration > 0 && r.duration) {
                 let diff = Math.abs(r.duration - targetDuration);
@@ -272,12 +288,8 @@ Singleton {
             }
         }
 
-        if (bestResult) return bestResult;
-
-        for (let i = 0; i < results.length; i++) {
-            if (results[i] && results[i].syncedLyrics) return results[i];
-        }
-        return results[0];
+        if (bestResult && bestScore >= 25) return bestResult;
+        return null;
     }
 
     function _xh(h) {
@@ -358,8 +370,9 @@ Singleton {
     }
 
     function fetchLrclib(myFetchId, cleanTrack, cleanArtist, targetDuration, cacheKey) {
-        if (targetDuration > 0 && cleanArtist !== "") {
-            let getUrl = `https://lrclib.net/api/get?track_name=${encodeURIComponent(cleanTrack)}&artist_name=${encodeURIComponent(cleanArtist)}&duration=${targetDuration}`;
+        let primaryArtist = cleanArtist.split(/[,;&\/]+/)[0].trim();
+        if (targetDuration > 0 && primaryArtist !== "") {
+            let getUrl = `https://lrclib.net/api/get?track_name=${encodeURIComponent(cleanTrack)}&artist_name=${encodeURIComponent(primaryArtist)}&duration=${targetDuration}`;
             var getXhr = new XMLHttpRequest();
             root.activeGetXhr = getXhr;
             getXhr.onreadystatechange = function() {
@@ -450,7 +463,8 @@ Singleton {
     }
 
     function searchLyricsFallback(fetchId, cleanTrack, cleanArtist, targetDuration, cacheKey) {
-        let query = `${cleanTrack} ${cleanArtist}`.trim();
+        let primaryArtist = cleanArtist.split(/[,;&\/]+/)[0].trim();
+        let query = `${cleanTrack} ${primaryArtist}`.trim();
         let url = `https://lrclib.net/api/search?q=${encodeURIComponent(query)}`;
         var xhr = new XMLHttpRequest();
         root.activeSearchXhr = xhr;
@@ -498,15 +512,19 @@ Singleton {
         let t = text.trim();
         if (t === "" || t === "♪") return false;
 
-        let creditPattern = /^(lyrics?( by)?|lyricist|composed?( by)?|composer|written( by)?|writer|produced?( by)?|producer|arranged?( by)?|arranger|music( by)?|vocals?( by)?|track\s*[:：\-]|artist\s*[:：\-]|album\s*[:：\-]|synced by|lrc by|source\s*[:：]|mixing( by)?|mixed by|mastering( by)?|mastered by|recorded?( by)?|recording( by)?|engineered by|publisher|label|qqmusic|kugou|netease|163\.com|lrclib|作\s*词|作\s*曲|编\s*曲|制\s*作|演唱|词曲|词\s*[:：]|曲\s*[:：]|录音|混音|母带|监制|统筹|企划|出品|发行|后期|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|原唱|翻唱|伴奏|配唱|乐器)/i;
+        let creditPattern = /^(lyrics?( by)?|lyricist|composed?( by)?|composer|written( by)?|writer|produced?( by)?|producer|arranged?( by)?|arranger|music( by)?|vocals?( by)?|track\s*[:：\-]|artist\s*[:：\-]|album\s*[:：\-]|synced by|lrc by|source\s*[:：]|mixing( by)?|mixed by|mastering( by)?|mastered by|recorded?( by)?|recording( by)?|engineered by|publisher|label|qqmusic|kugou|netease|163\.com|lrclib|作\s*词|作\s*曲|编\s*曲|制\s*作|监\s*制|录\s*音|混\s*音|母\s*带|演唱|词曲|词\s*[:：]|曲\s*[:：]|统筹|企划|出品|发行|后期|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|原唱|翻唱|伴奏|配唱|乐器|专\s*辑|歌\s*手|歌\s*名|曲\s*名)/i;
         if (creditPattern.test(t)) return true;
 
-        if (!isWordSynced && timeSec < 12.0) {
+        if (timeSec < 15.0) {
             let nt = root.normalizeStr(t);
             let nTitle = root.normalizeStr(root.currentTrackName || activePlayer?.trackTitle || "");
             let nArtist = root.normalizeStr(root.currentArtistName || activePlayer?.trackArtist || "");
+            let nAlbum = root.normalizeStr(activePlayer?.trackAlbum || "");
+
             if (nTitle && nArtist && nt.includes(nTitle) && nt.includes(nArtist)) return true;
-            if (/^.+?\s*[-–—]\s*.+?$/.test(t) && ((nTitle && nt.includes(nTitle)) || (nArtist && nt.includes(nArtist)))) return true;
+            if (nAlbum && nAlbum.length > 2 && (nt === nAlbum || nt.includes(nAlbum))) return true;
+            if (/^.+?\s*[-–—\/:]\s*.+?$/.test(t) && ((nTitle && nt.includes(nTitle)) || (nArtist && nt.includes(nArtist)))) return true;
+            if (nArtist && nt === nArtist) return true;
         }
 
         return false;
@@ -724,7 +742,7 @@ Singleton {
 
     function syncTrackChange() {
         let newTitle = activePlayer?.trackTitle || "";
-        let newArtist = activePlayer?.trackArtist || "";
+        let newArtist = MprisController.getPlayerArtists(activePlayer);
         if (newTitle !== root.currentTrackName || newArtist !== root.currentArtistName) {
             root.currentTrackName = newTitle;
             root.currentArtistName = newArtist;
@@ -750,6 +768,7 @@ Singleton {
         target: activePlayer
         function onTrackTitleChanged() { root.syncTrackChange(); }
         function onTrackArtistChanged() { root.syncTrackChange(); }
+        function onTrackArtistsChanged() { root.syncTrackChange(); }
         function onPositionChanged() {
             let p = activePlayer?.position || 0;
             let now = Date.now();
@@ -767,6 +786,7 @@ Singleton {
     Connections {
         target: MprisController
         function onActivePlayerChanged() { root.syncTrackChange(); }
+        function onTrackChanged() { root.syncTrackChange(); }
     }
 
     TextMetrics {

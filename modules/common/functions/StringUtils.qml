@@ -184,26 +184,61 @@ Singleton {
     }
 
     /**
-     * Cleans up a music title by removing bracketed and special characters.
+     * Cleans up a music title by removing bracketed, full-width, and special characters.
      * @param { string } title
      * @returns { string }
      */
     function cleanMusicTitle(title) {
         if (!title)
             return "";
-        // Remove bracketed tags anywhere in string (e.g. (From "..."), [Official Video])
-        title = title.replace(/ *\([^)]*\) */g, " "); // Round brackets
-        title = title.replace(/ *\[[^\]]*\] */g, " "); // Square brackets
-        title = title.replace(/ *\{[^\}]*\} */g, " "); // Curly brackets
-        title = title.replace(/ *【[^】]*】/g, " ");
-        title = title.replace(/ *《[^》]*》/g, " ");
-        title = title.replace(/ *「[^」]*」/g, " ");
-        title = title.replace(/ *『[^』]*』/g, " ");
-
-        // Remove hyphenated metadata (e.g. " - From...", " - Official...", " - Remastered...", " - Lyrical...")
+        title = title.replace(/ *[\(（][^\)）]*[\)）] */g, " ");
+        title = title.replace(/ *[\[［][^\]］]*[\]］] */g, " ");
+        title = title.replace(/ *[\{｛][^\}｝]*[\}｝] */g, " ");
+        title = title.replace(/ *[【〖][^】〗]*[】〗] */g, " ");
+        title = title.replace(/ *[《〈][^》〉]*[》〉] */g, " ");
+        title = title.replace(/ *[「『][^」』]*[」』] */g, " ");
         title = title.replace(/\s*[-–—]\s*(From|Official|Remastered|Live|Lyrical|Audio|Video)[\s"'.:(\[].*$/i, "");
 
+        if (/[a-zA-Z]/.test(title)) {
+            title = title.replace(/\s*[\/\-–—]\s*[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af\s]+$/g, "");
+        }
+
         return title.replace(/\s+/g, " ").trim();
+    }
+
+    /**
+     * Cleans up artist names by removing bracketed annotations and trailing translations.
+     * @param { string } artist
+     * @returns { string }
+     */
+    function cleanMusicArtist(artist) {
+        if (!artist)
+            return "";
+        artist = artist.replace(/\s*[\(（][^\)）]*[\)）]\s*/g, " ");
+        artist = artist.replace(/\s*[\[［][^\]］]*[\]］]\s*/g, " ");
+        artist = artist.replace(/\s*[【〖][^】〗]*[】〗]\s*/g, " ");
+        if (/[a-zA-Z]/.test(artist)) {
+            artist = artist.replace(/\s*[\/\-–—]\s*[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af\s]+$/g, "");
+        }
+        return artist.replace(/\s+/g, " ").trim();
+    }
+
+    /**
+     * Extracts featured or collaborating artists from a track title.
+     * @param { string } title
+     * @returns { string[] }
+     */
+    function extractFeaturedArtists(title) {
+        if (!title) return [];
+        const featRegex = /[\(\[](?:feat\.?|ft\.?|featuring|with)\s+([^\)\]]+)[\)\]]/gi;
+        let artists = [];
+        let match;
+        while ((match = featRegex.exec(title)) !== null) {
+            let raw = match[1].trim();
+            let parts = raw.split(/\s*(?:,|&|\band\b)\s*/i).map(s => s.trim()).filter(Boolean);
+            artists.push(...parts);
+        }
+        return artists;
     }
 
     /**
