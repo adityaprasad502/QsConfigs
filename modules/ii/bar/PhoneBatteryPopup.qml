@@ -8,9 +8,18 @@ StyledPopup {
     id: root
     property var phone: null
 
+    property real liveNow: Date.now()
+
     Column {
         anchors.centerIn: parent
         spacing: 8
+
+        Timer {
+            interval: 1000
+            running: root.active && (root.phone?.reachable ?? false)
+            repeat: true
+            onTriggered: root.liveNow = Date.now()
+        }
 
         StyledPopupHeaderRow {
             anchors.horizontalCenter: parent.horizontalCenter
@@ -36,6 +45,7 @@ StyledPopup {
 
             StatCard {
                 symbol: {
+                    if ((root.phone?.netStrength ?? 0) <= 0) return "signal_cellular_off"
                     const bars = ["signal_cellular_0_bar", "signal_cellular_1_bar",
                                   "signal_cellular_2_bar", "signal_cellular_3_bar",
                                   "signal_cellular_4_bar"]
@@ -54,8 +64,8 @@ StyledPopup {
                 symbol: "link"
                 title: Translation.tr("Connected")
                 value: {
-                    void(DateTime.clock.date)
-                    const secs = (Date.now() - (root.phone?.sessionStartTime ?? Date.now())) / 1000
+                    void(root.liveNow)
+                    const secs = (root.liveNow - (root.phone?.sessionStartTime ?? root.liveNow)) / 1000
                     const h = Math.floor(secs / 3600)
                     const m = Math.floor((secs % 3600) / 60)
                     return h > 0 ? `${h}h ${m}m` : `${m}m`
@@ -66,28 +76,44 @@ StyledPopup {
                 symbol: "history"
                 title: Translation.tr("This Session")
                 value: {
-                    const delta = (root.phone?.charge ?? 0) - (root.phone?.sessionStartCharge ?? root.phone?.charge ?? 0)
+                    const curCharge = root.phone?.charge ?? -1
+                    const startCharge = root.phone?.sessionStartCharge ?? -1
+                    if (curCharge < 0 || startCharge < 0) return "---"
+                    const delta = curCharge - startCharge
                     return (delta > 0 ? "+" : "") + delta + "%"
                 }
             }
 
-            // Row 3: Current Estimates & Pace (Hidden when discharging)
+            // Row 3: Current Estimates & Pace
             StatCard {
-                visible: root.phone?.isCharging ?? false
+                visible: (root.phone?.isCharging ?? false) || (Math.abs(root.phone?.chargeRate || root.phone?.avgChargeRate || 0) >= 0.03)
                 symbol: "avg_pace"
-                title: Translation.tr("Avg Rate")
+                title: root.phone?.isCharging ? Translation.tr("Avg Rate") : Translation.tr("Discharge Rate")
                 value: {
-                    void(DateTime.clock.date)
-                    const mins = (Date.now() - (root.phone?.sessionStartTime ?? Date.now())) / 60000
-                    const delta = (root.phone?.charge ?? 0) - (root.phone?.sessionStartCharge ?? root.phone?.charge ?? 0)
-                    if (mins < 1) return "---"
-                    const avg = delta / mins
-                    return (avg > 0 ? "+" : "") + avg.toFixed(1) + "%/min"
+                    void(root.liveNow)
+                    const isCharging = root.phone?.isCharging ?? false
+                    const avg = root.phone?.avgChargeRate || root.phone?.chargeRate || 0
+                    const curCharge = root.phone?.charge ?? -1
+                    const startCharge = root.phone?.sessionStartCharge ?? -1
+                    const delta = (curCharge >= 0 && startCharge >= 0) ? (curCharge - startCharge) : 0
+                    const mins = (root.liveNow - (root.phone?.sessionStartTime ?? root.liveNow)) / 60000
+
+                    if (Math.abs(avg) >= 0.05) {
+                        return (avg > 0 ? "+" : "") + avg.toFixed(1) + "%/min"
+                    }
+                    if (isCharging && mins < 0.75 && delta === 0) {
+                        return Translation.tr("Calculating…")
+                    }
+                    if (delta !== 0 && mins > 0) {
+                        let r = delta / mins
+                        return (r > 0 ? "+" : "") + r.toFixed(1) + "%/min"
+                    }
+                    return "---"
                 }
             }
 
             StatCard {
-                visible: root.phone?.isCharging ?? false
+                visible: (root.phone?.isCharging ?? false) || (Math.abs(root.phone?.chargeRate || root.phone?.avgChargeRate || 0) >= 0.03)
                 symbol: root.phone?.isCharging
                     ? ((root.phone?.charge ?? 0) >= 100 ? "task_alt" : "schedule")
                     : "timelapse"
@@ -95,24 +121,40 @@ StyledPopup {
                     ? ((root.phone?.charge ?? 0) >= 100 ? Translation.tr("Full For") : Translation.tr("Time to Full"))
                     : Translation.tr("Time to Empty")
                 value: {
-                    if (root.phone?.isCharging && (root.phone?.charge ?? 0) >= 100 && root.phone?.timeReachedFull) {
-                        void(DateTime.clock.date) // Refresh every minute
-                        const secs = (Date.now() - root.phone.timeReachedFull) / 1000
-                        const h = Math.floor(secs / 3600)
-                        const m = Math.floor((secs % 3600) / 60)
+                    void(root.liveNow)
+                    const isCharging = root.phone?.isCharging ?? false
+                    const curCharge = root.phone?.charge ?? -1
+                    if (curCharge < 0) return "---"
+
+                    if (isCharging) {
+                        if (curCharge >= 100 && root.phone?.timeReachedFull) {
+                            const secs = (root.liveNow - root.phone.timeReachedFull) / 1000
+                            const h = Math.floor(secs / 3600)
+                            const m = Math.floor((secs % 3600) / 60)
+                            return h > 0 ? `${h}h ${m}m` : `${m}m`
+                        }
+                        const rate = root.phone?.chargeRate || 0
+                        const avg = root.phone?.avgChargeRate || 0
+                        const effectiveRate = (rate > 0 && avg > 0) ? (0.7 * rate + 0.3 * avg) : (rate > 0 ? rate : avg)
+                        if (effectiveRate < 0.05) {
+                            const mins = (root.liveNow - (root.phone?.sessionStartTime ?? root.liveNow)) / 60000
+                            return mins < 1.0 ? Translation.tr("Estimating…") : "---"
+                        }
+                        const rem = Math.max(0, 100 - curCharge)
+                        const remMins = Math.round(rem / effectiveRate)
+                        if (remMins <= 0) return Translation.tr("Almost Full")
+                        const h = Math.floor(remMins / 60)
+                        const m = remMins % 60
+                        return h > 0 ? `${h}h ${m}m` : `${m}m`
+                    } else {
+                        const rate = Math.abs(root.phone?.chargeRate || root.phone?.avgChargeRate || 0)
+                        if (rate < 0.03) return "---"
+                        const remMins = Math.round(curCharge / rate)
+                        if (remMins <= 0) return "---"
+                        const h = Math.floor(remMins / 60)
+                        const m = remMins % 60
                         return h > 0 ? `${h}h ${m}m` : `${m}m`
                     }
-
-                    const rate = Math.abs(root.phone?.chargeRate ?? 0)
-                    if (rate < 0.05) return "---"
-                    const remaining = root.phone?.isCharging
-                        ? (100 - (root.phone?.charge ?? 0))
-                        : (root.phone?.charge ?? 0)
-                    const mins = Math.round(remaining / rate)
-                    if (mins <= 0) return "---"
-                    const h = Math.floor(mins / 60)
-                    const m = mins % 60
-                    return h > 0 ? `${h}h ${m}m` : `${m}m`
                 }
             }
 
@@ -145,6 +187,14 @@ StyledPopup {
             text: "Not reachable"
             color: Appearance.colors.colSubtext
             font.pixelSize: Appearance.font.pixelSize.small
+            anchors.horizontalCenter: parent.horizontalCenter
+        }
+
+        StyledText {
+            visible: root.phone?.reachable ?? false
+            text: Translation.tr("Middle-click to ring phone")
+            color: Appearance.colors.colSubtext
+            font.pixelSize: Appearance.font.pixelSize.smaller
             anchors.horizontalCenter: parent.horizontalCenter
         }
     }

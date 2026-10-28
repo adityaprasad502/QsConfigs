@@ -418,14 +418,21 @@ def _normalize_qrc(raw_qrc):
         line_dur = int(m_hdr.group(2))
         rest = m_hdr.group(3)
 
-        tokens = re.findall(r"([^()]+)\((\d+),(\d+)\)", rest)
-        if not tokens:
+        parts = re.split(r"\((\d+),(\d+)\)", rest)
+        if len(parts) < 3:
             out.append(f"[{line_start},{line_dur}]{rest}")
             continue
 
         res = f"[{line_start},{line_dur}]"
-        for w_text, w_start, w_dur in tokens:
-            off = max(0, int(w_start) - line_start)
+        trailing = parts[-1] if (len(parts) - 1) % 3 == 0 else ""
+        num_words = (len(parts) - 1) // 3
+        for idx in range(num_words):
+            w_text = parts[idx * 3]
+            w_start = int(parts[idx * 3 + 1])
+            w_dur = int(parts[idx * 3 + 2])
+            if idx == num_words - 1 and trailing:
+                w_text += trailing
+            off = max(0, w_start - line_start)
             res += f"<{off},{w_dur},0>{w_text}"
         out.append(res)
     return "\n".join(out)
@@ -581,14 +588,20 @@ def _normalize_yrc(raw_yrc):
         line_dur = int(m_hdr.group(2))
         rest = m_hdr.group(3)
 
-        tokens = re.findall(r"\((\d+),(\d+)(?:,\d+)?\)([^(]*)", rest)
-        if not tokens:
+        parts = re.split(r"\((\d+),(\d+)(?:,\d+)?\)", rest)
+        if len(parts) < 3:
             out.append(f"[{line_start},{line_dur}]{rest}")
             continue
 
         res = f"[{line_start},{line_dur}]"
-        for w_start, w_dur, w_text in tokens:
-            off = max(0, int(w_start) - line_start)
+        leading = parts[0]
+        if leading:
+            res += f"<0,50,0>{leading}"
+        for i in range(1, len(parts), 3):
+            w_start = int(parts[i])
+            w_dur = int(parts[i + 1])
+            w_text = parts[i + 2] if i + 2 < len(parts) else ""
+            off = max(0, w_start - line_start)
             res += f"<{off},{w_dur},0>{w_text}"
         out.append(res)
     return "\n".join(out)
@@ -721,12 +734,19 @@ def is_metadata_line(text, time_ms, title="", artist="", has_syllables=False):
         nt = norm(t)
         ntitle = norm(title)
         nartist = norm(artist)
-        if ntitle and nartist and (ntitle in nt and nartist in nt):
-            return True
-        if re.match(r"^.+?\s*[-–—\/:]\s*.+?$", t) and ((ntitle and ntitle in nt) or (nartist and nartist in nt)):
-            return True
         if nartist and nt == nartist:
             return True
+        if ntitle and nt == ntitle:
+            return True
+
+        parts = re.split(r"\s*[-–—\/:]\s*", t, maxsplit=1)
+        if len(parts) == 2:
+            p0 = norm(parts[0])
+            p1 = norm(parts[1])
+            if (p0 == ntitle and p1 == nartist) or (p0 == nartist and p1 == ntitle):
+                return True
+            if p0 in ("title", "track", "artist", "singer", "album", "song"):
+                return True
     return False
 
 def clean_syllables(lyrics, title="", artist=""):
@@ -753,7 +773,7 @@ def clean_syllables(lyrics, title="", artist=""):
         rest = m_hdr.group(5)
         has_syl = "<" in rest and ">" in rest
         plain_text = re.sub(r"<[^>]+>", "", rest)
-        plain_text = re.sub(r"\([^)]+\)", "", plain_text).strip()
+        plain_text = re.sub(r"\(\d+,\d+(?:,\d+)?\)", "", plain_text).strip()
 
         if is_metadata_line(plain_text, time_ms, title, artist, has_syllables=has_syl):
             if not seen_first_lyric:

@@ -8,14 +8,21 @@ MouseArea {
     id: root
 
     property var phone: null
-    readonly property real percentage: (phone?.charge ?? 0) / 100
+    readonly property real percentage: Math.max(0, (phone?.charge ?? 0)) / 100
     readonly property bool isCharging: phone?.isCharging ?? false
-    readonly property bool isLow: percentage <= Config.options.battery.low / 100
+    readonly property bool isLow: percentage <= Config.options.battery.low / 100 && (phone?.charge ?? -1) >= 0
 
     implicitWidth: batteryProgress.implicitWidth
     implicitHeight: batteryProgress.implicitHeight
 
     hoverEnabled: !Config.options.bar.tooltips.clickToShow
+    acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+
+    onClicked: mouse => {
+        if (mouse.button === Qt.MiddleButton && root.phone?.reachable) {
+            KdeConnect.findPhone(root.phone.id);
+        }
+    }
 
     ClippedProgressBar {
         id: batteryProgress
@@ -50,7 +57,7 @@ MouseArea {
                 StyledText {
                     Layout.alignment: Qt.AlignVCenter
                     font: batteryProgress.font
-                    text: batteryProgress.text
+                    text: (root.phone?.charge ?? -1) >= 0 ? batteryProgress.text : "?"
                 }
             }
         }

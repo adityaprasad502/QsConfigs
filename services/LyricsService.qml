@@ -20,6 +20,9 @@ Singleton {
     property string loadingStatus: ""
     property string currentLyricLine: ""
     property string currentLyricLineRich: ""
+    property string currentLyricLineDim: ""
+    property string currentLyricLineLit: ""
+    property real currentLineProgress: 0.0
     property int currentGroupStartIdx: -1
     property string nextLyricLine: ""
     property var lyricLines: [] // Array of { time: seconds, text: string }
@@ -35,6 +38,7 @@ Singleton {
 
     property real lastKnownPosition: 0
     property real lastKnownTimestamp: 0
+    property real lastMprisPos: -1
     property real lastWordSyncPos: 0
     property real syncLeadSeconds: 0.25 // Lead time in seconds (switches to next line slightly earlier)
 
@@ -43,7 +47,6 @@ Singleton {
     readonly property string colUpcomingHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.40).toString()
     readonly property string colLitHex: ColorUtils.applyAlpha(Appearance?.colors?.colOnLayer1 ?? Appearance?.colors?.colOnLayer0 ?? "#e6e1e1", 0.85).toString()
     readonly property string colActiveHex: colLitHex
-    readonly property string colWordHighlightHex: (Appearance?.colors?.colPrimary ?? "#38bdf8").toString()
     readonly property string colBulletHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.40).toString()
     readonly property string colTimerHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
     readonly property string colWaitingGroupHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
@@ -51,31 +54,13 @@ Singleton {
 
     // Background vocal styling: softer harmony glow and dimmer upcoming tone (Apple Music style)
     readonly property string colBgLitHex: ColorUtils.applyAlpha(root.colLitHex, 0.60).toString()
+    readonly property string colBgPastHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.20).toString()
     readonly property string colBgUpcomingHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.25).toString()
-    readonly property string colBgPastHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.25).toString()
-
-    readonly property var charFadeShades: {
-        let arr = [];
-        for (let s = 0; s <= 20; s++) {
-            let frac = s / 20.0;
-            arr.push(ColorUtils.mix(root.colLitHex, root.colUpcomingHex, frac).toString());
-        }
-        return arr;
-    }
-
-    readonly property var charFadeShadesBg: {
-        let arr = [];
-        for (let s = 0; s <= 20; s++) {
-            let frac = s / 20.0;
-            arr.push(ColorUtils.mix(root.colBgLitHex, root.colBgUpcomingHex, frac).toString());
-        }
-        return arr;
-    }
 
     function vocalEase(t, dur) {
         if (t <= 0) return 0;
         if (t >= 1) return 1;
-        if (dur < 0.18) return t;
+        if (dur < 0.15) return t;
         // Smoothstep Hermite S-curve for natural vocal resonance
         return t * t * (3.0 - 2.0 * t);
     }
@@ -102,116 +87,6 @@ Singleton {
                 res += `<font color="${col}">${esc}</font>`;
             }
         }
-        return res;
-    }
-
-    function generateWordRichText(line, currentSec) {
-        if (!line || !line.isWordSynced || !line.words || line.words.length === 0) {
-            return `<font color="${root.colLitHex}">${root.escapeXml(line ? line.text : "")}</font>`;
-        }
-
-        let words = line.words;
-        let chunks = [];
-
-        for (let i = 0; i < words.length; i++) {
-            let w = words[i];
-            let isBg = w.isBg || false;
-
-            if (currentSec >= w.end) {
-                chunks.push({ type: "sung", text: w.text, isBg: isBg });
-            } else if (currentSec >= w.start) {
-                let rawText = w.text || "";
-                let leadMatch = rawText.match(/^\s*/);
-                let trailMatch = rawText.match(/\s*$/);
-                let leadSpace = leadMatch ? leadMatch[0] : "";
-                let trailSpace = trailMatch ? trailMatch[0] : "";
-                let coreText = rawText.substring(leadSpace.length, rawText.length - trailSpace.length);
-
-                if (coreText.length === 0) {
-                    chunks.push({ type: "sung", text: rawText, isBg: isBg });
-                    continue;
-                }
-
-                let dur = Math.max(0.001, (w.end - w.start));
-                let rawT = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
-                let t = root.vocalEase(rawT, dur);
-
-                let chars = Array.from(coreText);
-                let len = chars.length;
-
-                if (len <= 1) {
-                    let shadeIdx = Math.round(t * 20);
-                    chunks.push({
-                        type: "active",
-                        sung: leadSpace,
-                        active: coreText,
-                        upcoming: trailSpace,
-                        shade: shadeIdx,
-                        isBg: isBg
-                    });
-                } else {
-                    let charPos = t * len;
-                    let activeIdx = Math.min(len - 1, Math.floor(charPos));
-                    let charFrac = charPos - activeIdx;
-                    let shadeIdx = Math.round(charFrac * 20);
-
-                    chunks.push({
-                        type: "active",
-                        sung: leadSpace + chars.slice(0, activeIdx).join(""),
-                        active: chars[activeIdx],
-                        upcoming: chars.slice(activeIdx + 1).join("") + trailSpace,
-                        shade: shadeIdx,
-                        isBg: isBg
-                    });
-                }
-            } else {
-                chunks.push({ type: "upcoming", text: w.text, isBg: isBg });
-            }
-        }
-
-        // Collapse adjacent identical chunks to minimize DOM tag nodes
-        let consolidated = [];
-        for (let c = 0; c < chunks.length; c++) {
-            let ch = chunks[c];
-            if (consolidated.length > 0 &&
-                consolidated[consolidated.length - 1].type === ch.type &&
-                consolidated[consolidated.length - 1].isBg === ch.isBg &&
-                ch.type !== "active") {
-                consolidated[consolidated.length - 1].text += ch.text;
-            } else {
-                consolidated.push(ch);
-            }
-        }
-
-        let res = "";
-        for (let k = 0; k < consolidated.length; k++) {
-            let item = consolidated[k];
-            let isBg = item.isBg;
-            let litCol = isBg ? root.colBgLitHex : root.colLitHex;
-            let dimCol = isBg ? root.colBgUpcomingHex : root.colUpcomingHex;
-
-            if (item.type === "sung") {
-                let part = `<font color="${litCol}">${root.escapeXml(item.text)}</font>`;
-                res += isBg ? `<i>${part}</i>` : part;
-            } else if (item.type === "active") {
-                let fadeCol = isBg
-                    ? (root.charFadeShadesBg[item.shade] || root.colBgLitHex)
-                    : (root.charFadeShades[item.shade] || root.colLitHex);
-                let part = "";
-                if (item.sung && item.sung.length > 0) {
-                    part += `<font color="${litCol}">${root.escapeXml(item.sung)}</font>`;
-                }
-                part += `<font color="${fadeCol}">${root.escapeXml(item.active)}</font>`;
-                if (item.upcoming && item.upcoming.length > 0) {
-                    part += `<font color="${dimCol}">${root.escapeXml(item.upcoming)}</font>`;
-                }
-                res += isBg ? `<i>${part}</i>` : part;
-            } else if (item.type === "upcoming") {
-                let part = `<font color="${dimCol}">${root.escapeXml(item.text)}</font>`;
-                res += isBg ? `<i>${part}</i>` : part;
-            }
-        }
-
         return res;
     }
 
@@ -420,6 +295,9 @@ Singleton {
             root.hasWordSync = false;
             root.currentLyricLine = "";
             root.currentLyricLineRich = "";
+            root.currentLyricLineDim = "";
+            root.currentLyricLineLit = "";
+            root.currentLineProgress = 0.0;
             root.currentGroupStartIdx = -1;
             root.nextLyricLine = "";
             root.loading = false;
@@ -432,6 +310,9 @@ Singleton {
         root.lyricGroupIndex = [];
         root.currentLyricLine = "";
         root.currentLyricLineRich = "";
+        root.currentLyricLineDim = "";
+        root.currentLyricLineLit = "";
+        root.currentLineProgress = 0.0;
         root.currentGroupStartIdx = -1;
         root.nextLyricLine = "";
         root.hasUnsyncedLyrics = false;
@@ -493,10 +374,27 @@ Singleton {
         xhr.send();
     }
 
+    function unescapeHtml(s) {
+        if (!s) return "";
+        return String(s)
+            .replace(/&apos;/g, "'")
+            .replace(/&#39;/g, "'")
+            .replace(/&#x27;/g, "'")
+            .replace(/&quot;/g, '"')
+            .replace(/&#34;/g, '"')
+            .replace(/&nbsp;/g, " ")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&amp;/g, "&");
+    }
+
     function parseTimeHeader(h) {
         if (!h) return 0;
         if (h.includes(":")) {
             let p = h.split(":");
+            if (p.length === 3) {
+                return (parseFloat(p[0]) || 0) * 3600.0 + (parseFloat(p[1]) || 0) * 60.0 + (parseFloat(p[2]) || 0);
+            }
             return (parseFloat(p[0]) || 0) * 60.0 + (parseFloat(p[1]) || 0);
         } else if (h.includes(",")) {
             let p = h.split(",");
@@ -521,10 +419,18 @@ Singleton {
             let nArtist = root.normalizeStr(root.currentArtistName || activePlayer?.trackArtist || "");
             let nAlbum = root.normalizeStr(activePlayer?.trackAlbum || "");
 
-            if (nTitle && nArtist && nt.includes(nTitle) && nt.includes(nArtist)) return true;
-            if (nAlbum && nAlbum.length > 2 && (nt === nAlbum || nt.includes(nAlbum))) return true;
-            if (/^.+?\s*[-–—\/:]\s*.+?$/.test(t) && ((nTitle && nt.includes(nTitle)) || (nArtist && nt.includes(nArtist)))) return true;
             if (nArtist && nt === nArtist) return true;
+            if (nTitle && nt === nTitle) return true;
+            if (nAlbum && nt === nAlbum) return true;
+
+            let parts = t.split(/\s*[-–—\/:]\s*/);
+            if (parts.length === 2) {
+                let p0 = root.normalizeStr(parts[0]);
+                let p1 = root.normalizeStr(parts[1]);
+                if ((p0 === nTitle && p1 === nArtist) || (p0 === nArtist && p1 === nTitle)) return true;
+                if ((p0 === nTitle && p1 === nAlbum) || (p0 === nAlbum && p1 === nTitle)) return true;
+                if (p0 === "title" || p0 === "track" || p0 === "artist" || p0 === "singer" || p0 === "album" || p0 === "song") return true;
+            }
         }
 
         return false;
@@ -532,6 +438,7 @@ Singleton {
 
     function parseLyricsString(synced) {
         if (!synced) return [];
+        synced = root.unescapeHtml(synced);
 
         let globalOffsetSec = 0;
         let offsetMatch = synced.match(/\[offset:\s*([+-]?\d+)\]/i);
@@ -548,7 +455,7 @@ Singleton {
             if (!rawLine) continue;
 
             let headers = [];
-            let headerRegex = /\[(\d+:\d+(?:\.\d+)?|\d+,\d+)\]/g;
+            let headerRegex = /\[(\d+(?::\d+)+(?:\.\d+)?|\d+(?:,\d+)?)\]\s*/g;
             let lastIdx = 0;
             let match;
             while ((match = headerRegex.exec(rawLine)) !== null) {
@@ -574,6 +481,13 @@ Singleton {
                 let isWordSynced = false;
 
                 if (content.includes("<") && content.includes(">")) {
+                    let firstTag = content.indexOf("<");
+                    if (firstTag > 0) {
+                        let leadText = content.substring(0, firstTag);
+                        if (leadText.length > 0) {
+                            words.push({ text: leadText, start: timeSec, end: timeSec + 0.05 });
+                        }
+                    }
                     let tagRegex = /<([^>]+)>([^<]*)/g;
                     let tm;
                     let tokens = [];
@@ -621,20 +535,39 @@ Singleton {
                         }
                         if (words.length > 0) isWordSynced = true;
                     }
-                } else if (/\(\d+,\d+\)/.test(content)) {
-                    let parenRegex = /\((\d+),(\d+)\)([^(]*)/g;
-                    let pm;
-                    while ((pm = parenRegex.exec(content)) !== null) {
-                        let off = parseFloat(pm[1]) || 0;
-                        let dur = parseFloat(pm[2]) || 0;
-                        let startSec = timeSec + (off / 1000.0);
-                        let endSec = startSec + (dur / 1000.0);
-                        let wText = pm[3];
-                        if (wText.length > 0) {
-                            words.push({ text: wText, start: startSec, end: endSec });
+                } else if (/\(\d+,\d+(?:,\d+)?\)/.test(content)) {
+                    let parenParts = content.split(/\((\d+),(\d+)(?:,\d+)?\)/);
+                    if (parenParts.length >= 3) {
+                        let isSuffix = (parenParts[0].trim().length > 0) && (parenParts[parenParts.length - 1].trim().length === 0);
+                        if (isSuffix) {
+                            // QRC format: word(start,dur)
+                            let trailing = parenParts[parenParts.length - 1];
+                            let num = Math.floor((parenParts.length - 1) / 3);
+                            for (let idx = 0; idx < num; idx++) {
+                                let wText = parenParts[idx * 3];
+                                let off = parseFloat(parenParts[idx * 3 + 1]) || 0;
+                                let dur = parseFloat(parenParts[idx * 3 + 2]) || 0;
+                                if (idx === num - 1 && trailing) wText += trailing;
+                                let startSec = timeSec + (off / 1000.0);
+                                let endSec = startSec + (dur / 1000.0);
+                                if (wText.length > 0) words.push({ text: wText, start: startSec, end: endSec });
+                            }
+                        } else {
+                            // YRC format: (start,dur)word
+                            if (parenParts[0].length > 0) {
+                                words.push({ text: parenParts[0], start: timeSec, end: timeSec + 0.05 });
+                            }
+                            for (let idx = 1; idx < parenParts.length; idx += 3) {
+                                let off = parseFloat(parenParts[idx]) || 0;
+                                let dur = parseFloat(parenParts[idx + 1]) || 0;
+                                let wText = parenParts[idx + 2] || "";
+                                let startSec = timeSec + (off / 1000.0);
+                                let endSec = startSec + (dur / 1000.0);
+                                if (wText.length > 0) words.push({ text: wText, start: startSec, end: endSec });
+                            }
                         }
+                        if (words.length > 0) isWordSynced = true;
                     }
-                    if (words.length > 0) isWordSynced = true;
                 }
 
                 let lineWords = (words.length > 0) ? words : null;
@@ -651,7 +584,7 @@ Singleton {
                 if (lineWords && lineWords.length > 0) {
                     cleanText = lineWords.map(w => w.text).join("").trim();
                 } else {
-                    cleanText = content.replace(/<[^>]+>/g, "").replace(/\(\d+,\d+\)/g, "").trim();
+                    cleanText = content.replace(/<[^>]+>/g, "").replace(/\(\d+,\d+(?:,\d+)?\)/g, "").trim();
                 }
                 if (cleanText.length === 0) cleanText = "♪";
 
@@ -717,7 +650,7 @@ Singleton {
             } catch(e) {}
         }
 
-        root.hasUnsyncedLyrics = (!parsed || parsed.length === 0) && data.plainLyrics && data.plainLyrics.length > 0;
+        root.hasUnsyncedLyrics = (!parsed || parsed.length === 0) && ((data.plainLyrics && data.plainLyrics.length > 0) || (data.syncedLyrics && data.syncedLyrics.length > 0));
         if (parsed && parsed.length > 0) {
             root.lyricLines = parsed;
             root.hasWordSync = parsed.some(function(l) { return l.isWordSynced; });
@@ -740,15 +673,51 @@ Singleton {
         return isSpotify || isAudacious || isKdeConnect || true;
     }
 
+    function syncAudioPosition(rawPos, forceSnap) {
+        let now = Date.now();
+        if (forceSnap || root.lastKnownTimestamp === 0 || root.lastMprisPos < 0) {
+            root.lastMprisPos = rawPos;
+            root.lastKnownPosition = rawPos;
+            root.lastKnownTimestamp = now;
+            root.lastWordSyncPos = rawPos;
+            return;
+        }
+
+        if (rawPos === root.lastMprisPos) {
+            // MPRIS position unchanged; local clock extrapolates smoothly via Date.now()
+            return;
+        }
+
+        // Fresh reading from audio player
+        let elapsed = (now - root.lastKnownTimestamp) / 1000.0;
+        let estimatedPos = root.lastKnownPosition + elapsed;
+        let diff = rawPos - estimatedPos;
+
+        root.lastMprisPos = rawPos;
+
+        if (Math.abs(diff) > 1.2) {
+            // Seeked or track jumped
+            root.lastKnownPosition = rawPos;
+            root.lastKnownTimestamp = now;
+            root.lastWordSyncPos = rawPos;
+        } else {
+            // Subtle clock skew: gently ease towards player position without stuttering
+            root.lastKnownPosition = estimatedPos + diff * 0.15;
+            root.lastKnownTimestamp = now;
+        }
+    }
+
     function syncTrackChange() {
         let newTitle = activePlayer?.trackTitle || "";
         let newArtist = MprisController.getPlayerArtists(activePlayer);
         if (newTitle !== root.currentTrackName || newArtist !== root.currentArtistName) {
             root.currentTrackName = newTitle;
             root.currentArtistName = newArtist;
-            root.lastKnownPosition = (activePlayer?.position && activePlayer.position < 3.0) ? activePlayer.position : 0;
+            let initPos = (activePlayer?.position && activePlayer.position < 3.0) ? activePlayer.position : 0;
+            root.lastMprisPos = initPos;
+            root.lastKnownPosition = initPos;
             root.lastKnownTimestamp = Date.now();
-            root.lastWordSyncPos = root.lastKnownPosition;
+            root.lastWordSyncPos = initPos;
             if (root.isSupportedPlayer(activePlayer)) {
                 root.fetchLyrics(root.currentTrackName, root.currentArtistName);
             } else {
@@ -758,6 +727,9 @@ Singleton {
                 root.hasWordSync = false;
                 root.currentLyricLine = "";
                 root.currentLyricLineRich = "";
+                root.currentLyricLineDim = "";
+                root.currentLyricLineLit = "";
+                root.currentLineProgress = 0.0;
                 root.currentGroupStartIdx = -1;
                 root.nextLyricLine = "";
             }
@@ -769,17 +741,19 @@ Singleton {
         function onTrackTitleChanged() { root.syncTrackChange(); }
         function onTrackArtistChanged() { root.syncTrackChange(); }
         function onTrackArtistsChanged() { root.syncTrackChange(); }
-        function onPositionChanged() {
-            let p = activePlayer?.position || 0;
-            let now = Date.now();
-            let est = root.lastKnownPosition + (now - root.lastKnownTimestamp) / 1000.0;
-            if (Math.abs(p - est) > 1.2) {
-                root.lastKnownPosition = p;
-                root.lastKnownTimestamp = now;
-                root.lastWordSyncPos = p;
-            } else if (Math.abs(p - est) > 0.05) {
-                root.lastKnownPosition += (p - est) * 0.15;
+        function onPlaybackStateChanged() {
+            if (activePlayer?.playbackState === MprisPlaybackState.Playing) {
+                root.syncAudioPosition(activePlayer?.position || 0, true);
+            } else {
+                if (root.lastKnownTimestamp > 0) {
+                    root.lastKnownPosition += (Date.now() - root.lastKnownTimestamp) / 1000.0;
+                }
+                root.lastKnownTimestamp = 0;
+                root.lastMprisPos = -1;
             }
+        }
+        function onPositionChanged() {
+            root.syncAudioPosition(activePlayer?.position || 0, false);
         }
     }
 
@@ -801,13 +775,110 @@ Singleton {
         return lyricMetrics.advanceWidth;
     }
 
+    function ensureLineMetrics(line) {
+        if (!line || line._totalWidth !== undefined) return;
+        if (!line.words || line.words.length === 0) {
+            line._totalWidth = root.measurePixelWidth(line.text);
+            line._wordBounds = [];
+            return;
+        }
+        let bounds = [];
+        let cumulative = "";
+        let prevW = 0;
+        for (let i = 0; i < line.words.length; i++) {
+            let w = line.words[i];
+            cumulative += w.text;
+            let curW = root.measurePixelWidth(cumulative);
+            bounds.push({ startX: prevW, endX: curW });
+            prevW = curW;
+        }
+        line._wordBounds = bounds;
+        line._totalWidth = prevW > 0 ? prevW : root.measurePixelWidth(line.text);
+    }
 
+    function getLineSweepFraction(line, currentSec) {
+        if (!line) return 0.0;
+        root.ensureLineMetrics(line);
+        let totalW = line._totalWidth || 0;
+        if (totalW <= 0) return 0.0;
+        if (!line.words || line.words.length === 0) return 1.0;
+
+        let words = line.words;
+        let bounds = line._wordBounds;
+        if (!bounds || bounds.length !== words.length) return 0.0;
+
+        if (currentSec <= words[0].start) return 0.0;
+        if (currentSec >= words[words.length - 1].end) return 1.0;
+
+        for (let i = 0; i < words.length; i++) {
+            let w = words[i];
+            let b = bounds[i];
+            if (currentSec < w.end) {
+                if (currentSec <= w.start) {
+                    return b.startX / totalW;
+                }
+                let dur = Math.max(0.001, w.end - w.start);
+                let rawT = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
+                let easeT = root.vocalEase(rawT, dur);
+                let pixelX = b.startX + easeT * (b.endX - b.startX);
+                return Math.max(0.0, Math.min(1.0, pixelX / totalW));
+            }
+        }
+        return 1.0;
+    }
+
+    function calculateGroupSweep(currGroup, currIdx, currentSec) {
+        let lines = root.lyricLines;
+        if (!currGroup || !lines || lines.length === 0) return 0.0;
+
+        if (currGroup.startIdx === currGroup.endIdx) {
+            let lObj = lines[currGroup.startIdx];
+            if (!lObj || !lObj.isWordSynced) return 1.0;
+            return root.getLineSweepFraction(lObj, currentSec);
+        }
+
+        let bulletW = root.measurePixelWidth(" • ");
+        let totalGroupW = 0;
+        let sweptPixels = 0;
+
+        for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
+            let lObj = lines[m];
+            root.ensureLineMetrics(lObj);
+            let lineW = lObj._totalWidth || 0;
+
+            if (m > currGroup.startIdx) {
+                totalGroupW += bulletW;
+                if (m <= currIdx) {
+                    sweptPixels += bulletW;
+                }
+            }
+
+            totalGroupW += lineW;
+
+            if (m < currIdx) {
+                sweptPixels += lineW;
+            } else if (m === currIdx) {
+                if (lObj.isWordSynced) {
+                    let frac = root.getLineSweepFraction(lObj, currentSec);
+                    sweptPixels += frac * lineW;
+                } else {
+                    sweptPixels += lineW;
+                }
+            }
+        }
+
+        if (totalGroupW <= 0) return 0.0;
+        return Math.max(0.0, Math.min(1.0, sweptPixels / totalGroupW));
+    }
 
     function buildGroupIndex() {
         let lines = root.lyricLines;
         if (!lines || lines.length === 0) {
             root.lyricGroupIndex = [];
             return;
+        }
+        for (let l = 0; l < lines.length; l++) {
+            root.ensureLineMetrics(lines[l]);
         }
         let maxAllowedPx = Math.max(160, (GlobalStates?.topBarMediaWidth ?? 440) - 135);
         root.lastGroupWidth = maxAllowedPx;
@@ -886,36 +957,26 @@ Singleton {
     }
 
     Timer {
-        interval: root.hasWordSync ? 25 : 200
+        interval: root.hasWordSync ? 16 : 200
         repeat: true
         running: activePlayer?.playbackState === MprisPlaybackState.Playing && root.lyricLines.length > 0
         onTriggered: {
             let pos = activePlayer?.position || 0;
+            root.syncAudioPosition(pos, false);
+
             let now = Date.now();
-            let elapsedSec = (now - root.lastKnownTimestamp) / 1000.0;
-
-            if (pos !== root.lastKnownPosition) {
-                let drift = pos - (root.lastKnownPosition + elapsedSec);
-                if (Math.abs(drift) > 1.2) {
-                    root.lastKnownPosition = pos;
-                    root.lastKnownTimestamp = now;
-                    elapsedSec = 0;
-                    root.lastWordSyncPos = pos;
-                } else if (Math.abs(drift) > 0.05) {
-                    root.lastKnownPosition += drift * 0.15;
-                }
-            }
-
+            let elapsedSec = root.lastKnownTimestamp > 0 ? (now - root.lastKnownTimestamp) / 1000.0 : 0;
             let currentPos = root.lastKnownPosition + elapsedSec;
+
             // For word-by-word karaoke, words and lines synchronize precisely with audio playback (0s lead).
             let lineSyncPos = Math.max(0, currentPos + (root.hasWordSync ? 0.0 : root.syncLeadSeconds));
             let audioSyncPos = lineSyncPos;
 
             let wordSyncPos = Math.max(0, currentPos);
             if (activePlayer?.playbackState === MprisPlaybackState.Playing) {
-                if (wordSyncPos >= root.lastWordSyncPos && (wordSyncPos - root.lastWordSyncPos) < 2.0) {
+                if (wordSyncPos >= root.lastWordSyncPos) {
                     root.lastWordSyncPos = wordSyncPos;
-                } else if (Math.abs(wordSyncPos - root.lastWordSyncPos) >= 2.0) {
+                } else if (Math.abs(wordSyncPos - root.lastWordSyncPos) > 1.2) {
                     root.lastWordSyncPos = wordSyncPos;
                 } else {
                     wordSyncPos = root.lastWordSyncPos;
@@ -948,44 +1009,15 @@ Singleton {
 
             let newCurrentLine = "";
             let newCurrentLineRich = "";
+            let newCurrentLineDim = "";
+            let newCurrentLineLit = "";
             let newNextLine = "";
             let newGroupStartIdx = -1;
+            let newProgress = 0.0;
 
             if (currIdx >= 0) {
                 let currGroup = groups[currIdx];
                 let baseText = currGroup.text;
-
-                // Sub-line split fade for multi-line groups (with progressive word-by-word highlight)
-                let baseTextRich = "";
-                if (currGroup.startIdx < currGroup.endIdx) {
-                    let parts = [];
-                    for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
-                        let lObj = lines[m];
-                        let lineText = root.escapeXml(lObj.text);
-                        if (m < currIdx) {
-                            // In karaoke (word-sync), keep previously sung lines glowing rather than turning them off
-                            let pastCol = (root.hasWordSync || lObj.isWordSynced) ? root.colLitHex : root.colPastHex;
-                            let pastBgCol = (root.hasWordSync || lObj.isWordSynced) ? root.colBgLitHex : root.colBgPastHex;
-                            parts.push(root.formatLineRich(lObj.text, pastCol, pastBgCol));
-                        } else if (m === currIdx) {
-                            if (lObj.isWordSynced && lObj.words && lObj.words.length > 0) {
-                                parts.push(root.generateWordRichText(lObj, wordSyncPos));
-                            } else {
-                                parts.push(root.formatLineRich(lObj.text, root.colActiveHex, root.colBgLitHex));
-                            }
-                        } else {
-                            parts.push(root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex));
-                        }
-                    }
-                    baseTextRich = parts.join(`<font color="${root.colBulletHex}"> • </font>`);
-                } else {
-                    let lObj = lines[currGroup.startIdx];
-                    if (lObj && lObj.isWordSynced && lObj.words && lObj.words.length > 0) {
-                        baseTextRich = root.generateWordRichText(lObj, wordSyncPos);
-                    } else {
-                        baseTextRich = root.formatLineRich(baseText, root.colActiveHex, root.colBgLitHex);
-                    }
-                }
 
                 let isSingleLine = currGroup.startIdx === currGroup.endIdx;
                 let identicalCount = 1;
@@ -1022,9 +1054,72 @@ Singleton {
                     && currGroup.startIdx > 0
                     && lines[currGroup.startIdx - 1].text === rawGroupText;
 
+                let repeatSuffix = "";
                 if (identicalCount > 1 || isLastOfSeries) {
-                    baseText = `${baseText} (x${identicalCount})`;
-                    baseTextRich = `${baseTextRich} <font color="${root.colTimerHex}">(x${identicalCount})</font>`;
+                    repeatSuffix = ` (x${identicalCount})`;
+                }
+
+                let baseTextDim = "";
+                let baseTextLit = "";
+                let baseTextRich = "";
+
+                if (currGroup.startIdx < currGroup.endIdx) {
+                    let partsDim = [];
+                    let partsLit = [];
+                    let partsRich = [];
+                    for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
+                        let lObj = lines[m];
+                        partsDim.push(root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex));
+                        partsLit.push(root.formatLineRich(lObj.text, root.colLitHex, root.colBgLitHex));
+                        if (m < currIdx) {
+                            partsRich.push(root.formatLineRich(lObj.text, root.colPastHex, root.colBgPastHex));
+                        } else if (m === currIdx) {
+                            partsRich.push(root.formatLineRich(lObj.text, root.colLitHex, root.colBgLitHex));
+                        } else {
+                            partsRich.push(root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex));
+                        }
+                    }
+                    baseTextDim = partsDim.join(`<font color="${root.colBulletHex}"> • </font>`);
+                    baseTextLit = partsLit.join(`<font color="${root.colBulletHex}"> • </font>`);
+                    baseTextRich = partsRich.join(`<font color="${root.colBulletHex}"> • </font>`);
+                } else {
+                    baseTextDim = root.formatLineRich(baseText, root.colUpcomingHex, root.colBgUpcomingHex);
+                    baseTextLit = root.formatLineRich(baseText, root.colLitHex, root.colBgLitHex);
+                    baseTextRich = baseTextLit;
+                }
+
+                let totalLyricW = 0;
+                if (currGroup.startIdx < currGroup.endIdx) {
+                    let bulletW = root.measurePixelWidth(" • ");
+                    for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
+                        root.ensureLineMetrics(lines[m]);
+                        if (m > currGroup.startIdx) totalLyricW += bulletW;
+                        totalLyricW += (lines[m]._totalWidth || 0);
+                    }
+                } else {
+                    let lObj = lines[currGroup.startIdx];
+                    root.ensureLineMetrics(lObj);
+                    totalLyricW = lObj ? (lObj._totalWidth || 0) : 0;
+                }
+
+                if (repeatSuffix.length > 0) {
+                    baseText = baseText + repeatSuffix;
+                    baseTextDim += ` <font color="${root.colTimerHex}">${repeatSuffix}</font>`;
+                    baseTextRich += ` <font color="${root.colTimerHex}">${repeatSuffix}</font>`;
+                    // Repeat indicators (x1, x2) are UI metadata, not sung lyrics — keep out of lit overlay
+                }
+
+                if (root.hasWordSync) {
+                    let lyricFrac = root.calculateGroupSweep(currGroup, currIdx, wordSyncPos);
+                    if (repeatSuffix.length > 0 && totalLyricW > 0) {
+                        let suffixW = root.measurePixelWidth(repeatSuffix);
+                        let totalLineW = totalLyricW + suffixW;
+                        newProgress = lyricFrac * (totalLyricW / totalLineW);
+                    } else {
+                        newProgress = lyricFrac;
+                    }
+                } else {
+                    newProgress = 1.0;
                 }
 
                 let hasNextGroup = currGroup.nextStartIdx < lines.length;
@@ -1074,6 +1169,9 @@ Singleton {
                                 newCurrentLineRich = root.trackInfoRich || "";
                             }
                         }
+                        newCurrentLineDim = newCurrentLineRich;
+                        newCurrentLineLit = newCurrentLineRich;
+                        newProgress = 0.0;
                     } else {
                         let groupEndTime = lines[currGroup.endIdx].endTime || (lines[currGroup.endIdx].time + 3.0);
                         let isGroupFinished = wordSyncPos >= groupEndTime;
@@ -1088,12 +1186,20 @@ Singleton {
                         if (remaining > 0 && isGroupFinished && gap > 5.0 && timeSinceEnd > 2.5) {
                             newCurrentLine = `${baseText} (♪ ${remaining}s)`;
                             newCurrentLineRich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font> <font color="${root.colTimerHex}">(♪ ${remaining}s)</font>`;
+                            newCurrentLineDim = newCurrentLineRich;
+                            newCurrentLineLit = newCurrentLineRich;
+                            newProgress = 0.0;
                         } else if (remaining === 0 && isGroupFinished && gap > 5.0 && timeSinceEnd > 2.5) {
                             newCurrentLine = baseText;
                             newCurrentLineRich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font>`;
+                            newCurrentLineDim = newCurrentLineRich;
+                            newCurrentLineLit = newCurrentLineRich;
+                            newProgress = 0.0;
                         } else {
                             // Actively singing OR brief gap before next line: NEVER interrupt the lyric animation!
                             newCurrentLine = baseText;
+                            newCurrentLineDim = baseTextDim;
+                            newCurrentLineLit = baseTextLit;
                             newCurrentLineRich = baseTextRich;
                         }
                     }
@@ -1123,6 +1229,9 @@ Singleton {
                                 newCurrentLineRich = root.trackInfoRich || "";
                             }
                         }
+                        newCurrentLineDim = newCurrentLineRich;
+                        newCurrentLineLit = newCurrentLineRich;
+                        newProgress = 0.0;
                     } else {
                         // Real lyric at end of track:
                         let hasSignificantOutro = trackLen > 0 && (trackLen - groupEndTime) > 6.0;
@@ -1133,6 +1242,9 @@ Singleton {
                             newCurrentLineRich = root.trackInfoPlain
                                 ? `${root.trackInfoRich} <font color="${root.colTimerHex}">(Outro)</font>`
                                 : `<font color="${root.colTimerHex}">Outro</font>`;
+                            newCurrentLineDim = newCurrentLineRich;
+                            newCurrentLineLit = newCurrentLineRich;
+                            newProgress = 0.0;
                         } else if (isGroupFinished && timeSinceLastLyric >= 3.5) {
                             // Song ends shortly after: keep holding the completed lyric muted
                             let waitingHex = (currGroup.startIdx < currGroup.endIdx)
@@ -1140,9 +1252,14 @@ Singleton {
                                 : root.colWaitingSingleHex;
                             newCurrentLine = baseText;
                             newCurrentLineRich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font>`;
+                            newCurrentLineDim = newCurrentLineRich;
+                            newCurrentLineLit = newCurrentLineRich;
+                            newProgress = 1.0;
                         } else {
                             // Actively being sung or just finished: keep full animated text!
                             newCurrentLine = baseText;
+                            newCurrentLineDim = baseTextDim;
+                            newCurrentLineLit = baseTextLit;
                             newCurrentLineRich = baseTextRich;
                         }
                     }
@@ -1163,12 +1280,20 @@ Singleton {
                     newCurrentLine = root.trackInfoPlain || "";
                     newCurrentLineRich = root.trackInfoRich || "";
                 }
+                newCurrentLineDim = newCurrentLineRich;
+                newCurrentLineLit = newCurrentLineRich;
+                newProgress = 0.0;
             }
 
             if (root.currentLyricLine !== newCurrentLine) root.currentLyricLine = newCurrentLine;
+            if (root.currentLyricLineDim !== newCurrentLineDim) root.currentLyricLineDim = newCurrentLineDim;
+            if (root.currentLyricLineLit !== newCurrentLineLit) root.currentLyricLineLit = newCurrentLineLit;
             if (root.currentLyricLineRich !== newCurrentLineRich) root.currentLyricLineRich = newCurrentLineRich;
             if (root.currentGroupStartIdx !== newGroupStartIdx) root.currentGroupStartIdx = newGroupStartIdx;
             if (root.nextLyricLine !== newNextLine) root.nextLyricLine = newNextLine;
+            if (Math.abs(root.currentLineProgress - newProgress) > 0.0005) {
+                root.currentLineProgress = newProgress;
+            }
         }
     }
 

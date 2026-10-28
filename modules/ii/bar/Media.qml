@@ -212,6 +212,9 @@ Item {
                     return "Everything happens for a reason";
                 }
                 if (root.hasLyrics) {
+                    if (LyricsService.hasWordSync) {
+                        return LyricsService.currentLyricLineDim || LyricsService.currentLyricLineRich || LyricsService.currentLyricLine;
+                    }
                     return LyricsService.currentLyricLineRich || LyricsService.currentLyricLine;
                 }
                 let artistStr = MprisController.getPlayerArtists(activePlayer);
@@ -261,13 +264,52 @@ Item {
                     textFormat: root.hasLyrics ? Text.StyledText : Text.PlainText
                     color: Appearance.colors.colSubtext
                     text: topBarTextContainer.displayText
+
+                    Item {
+                        id: lyricClipOverlay
+                        visible: root.hasLyrics && LyricsService.hasWordSync && LyricsService.currentLineProgress > 0
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: Math.min(parent.implicitWidth, Math.max(0, Math.round(parent.implicitWidth * LyricsService.currentLineProgress)))
+                        clip: true
+
+                        StyledText {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: topBarMusicText.implicitWidth
+                            textFormat: Text.StyledText
+                            text: LyricsService.currentLyricLineLit
+                        }
+                    }
                 }
 
                 StyledText {
+                    id: topBarMusicTextDup
                     visible: topBarTextContainer.isOverflowing && topBarMarqueeAnim.running
                     textFormat: root.hasLyrics ? Text.StyledText : Text.PlainText
                     color: Appearance.colors.colSubtext
                     text: topBarTextContainer.displayText
+
+                    Item {
+                        id: lyricClipOverlayDup
+                        visible: root.hasLyrics && LyricsService.hasWordSync && LyricsService.currentLineProgress > 0
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: Math.min(parent.implicitWidth, Math.max(0, Math.round(parent.implicitWidth * LyricsService.currentLineProgress)))
+                        clip: true
+
+                        StyledText {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: topBarMusicTextDup.implicitWidth
+                            textFormat: Text.StyledText
+                            text: LyricsService.currentLyricLineLit
+                        }
+                    }
                 }
 
                 SequentialAnimation on x {
