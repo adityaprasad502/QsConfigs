@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-import sys
-import os
-import threading
-import queue
 import json
 import base64
 import zlib
 import re
+import time
+import gzip
 import urllib.request
 import urllib.parse
 
@@ -30,76 +28,91 @@ _Q3 = bytes.fromhex("21402329282a24255e26616263444546")
 _U6 = _d("68747470733a2f2f6d757369632e3136332e636f6d2f6170692f636c6f75647365617263682f70633f733d257326747970653d31266f66667365743d30266c696d69743d33")
 _U7 = _d("68747470733a2f2f6d757369632e3136332e636f6d2f6170692f736f6e672f6c797269633f69643d2573266c763d2d31266b763d2d312674763d2d312679763d31")
 _NE_REF = _d("68747470733a2f2f6d757369632e3136332e636f6d2f")
+_P2_REF = _d("68747470733a2f2f792e71712e636f6d2f")
+
+_CONTENT_RE = re.compile(r"<content[^>]*><!\[CDATA\[(.*?)\]\]></content>", re.S)
+
+# Shared monotonic deadline (set by the orchestrator) so no request outlives the overall budget.
+_deadline = 0.0
+
+def set_deadline(t):
+    global _deadline
+    _deadline = t
+
+def _http(url, headers=None, data=None, timeout=4.0):
+    """GET/POST returning the (gunzipped) body. Honors the shared deadline."""
+    if _deadline:
+        remaining = _deadline - time.monotonic()
+        if remaining < 0.3:
+            raise TimeoutError("deadline")
+        timeout = min(timeout, remaining)
+    h = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=data, headers=h)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+        if resp.headers.get("Content-Encoding") == "gzip":
+            raw = gzip.decompress(raw)
+    return raw
 
 def norm(s):
     return "".join(c.lower() for c in (s or "") if c.isalnum())
 
-# ==============================================================================
-# Provider 1: KRC
-# ==============================================================================
-def fetch_p1(title, artist="", target_duration=0):
-    primary_artist = re.split(r"[,;&/]+", artist)[0].strip() if artist else ""
-    query = f"{title} {primary_artist}".strip()
-    if not query:
+_BRACKETS_RE = re.compile(r"\s*[\(（\[［【〖《〈「『\{][^\)）\]］】〗》〉」』\}]*[\)）\]］】〗》〉」』\}]")
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
+_ARTIST_SPLIT = re.compile(r"[,;&/、]+")
+
+def norm_variants(s):
+    """Normalized forms of a name: raw, without bracketed notes, and without CJK translations."""
+    if not s:
+        return set()
+    unbracketed = _BRACKETS_RE.sub("", s)
+    out = {norm(s), norm(unbracketed), norm(_CJK_RE.sub("", unbracketed))}
+    out.discard("")
+    return out
+
+def _relation(a_set, b_set, min_sub):
+    """2 = exact match, 1 = containment (shorter side >= min_sub chars), 0 = unrelated."""
+    rel = 0
+    for a in a_set:
+        for b in b_set:
+            if a == b:
+                return 2
+            short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+            if len(short) >= min_sub and short in long_:
+                rel = 1
+    return rel
+
+def _pick_best(items, extract, title, artist, target_duration):
+    """Score search results and return the best match (or None).
+
+    `extract(item)` returns (name, singers, duration_seconds) or None to skip the item.
+    Names are compared ignoring bracketed notes and CJK translations on either side.
+    """
+    title_vars = norm_variants(title)
+    if not items or not title_vars:
         return None
+    artist_vars = [v for v in (norm_variants(a) for a in _ARTIST_SPLIT.split(artist or "")) if v]
 
-    search_url = _U1 % urllib.parse.quote(query)
-    req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            s_data = json.loads(resp.read())
-    except Exception:
-        return None
-
-    info = s_data.get("data", {}).get("info", [])
-    if not info:
-        return None
-
-    target_artists = [norm(a) for a in re.split(r"[,;&/]+", artist) if len(norm(a)) > 1] if artist else []
-    target_title_norm = norm(title)
-    if not target_title_norm:
-        return None
-
-    best_song = None
-    best_score = -999999
-
-    for s in info:
-        h = s.get("hash")
-        if not h:
+    best, best_score = None, -999999
+    for item in items:
+        fields = extract(item)
+        if not fields:
             continue
-        s_title = s.get("songname", "")
-        s_artist = s.get("singername", "")
-        dur = s.get("duration", 0)
+        name, singers, dur = fields
 
-        s_artist_norm = norm(s_artist)
-        s_title_norm = norm(s_title)
-
-        title_matches = False
-        if s_title_norm == target_title_norm:
-            title_matches = True
-        elif len(target_title_norm) > 2 and (target_title_norm in s_title_norm or s_title_norm in target_title_norm):
-            title_matches = True
-
-        if not title_matches:
+        rel = _relation(title_vars, norm_variants(name), 3)
+        if rel == 0:
             continue
+        score = 50 if rel == 2 else 25
 
-        score = 50 if s_title_norm == target_title_norm else 25
+        if artist_vars:
+            s_artist_vars = norm_variants(singers)
+            best_rel = max((_relation(av, s_artist_vars, 2) for av in artist_vars), default=0)
+            score += {2: 60, 1: 30, 0: -20}[best_rel]
 
-        if target_artists:
-            matched_artist = False
-            for ta in target_artists:
-                if s_artist_norm == ta:
-                    score += 60
-                    matched_artist = True
-                    break
-                elif ta in s_artist_norm or s_artist_norm in ta:
-                    score += 30
-                    matched_artist = True
-                    break
-            if not matched_artist:
-                score -= 20
-
-        if target_duration > 0 and dur > 0:
+        if target_duration > 0 and dur and dur > 0:
             diff = abs(dur - target_duration)
             if diff <= 1:
                 score += 40
@@ -111,10 +124,35 @@ def fetch_p1(title, artist="", target_duration=0):
                 score -= 40
 
         if score > best_score:
-            best_score = score
-            best_song = s
+            best, best_score = item, score
 
-    if not best_song or best_score < 25:
+    return best if best is not None and best_score >= 25 else None
+
+# ==============================================================================
+# Provider 1
+# ==============================================================================
+def fetch_p1(title, artist="", target_duration=0):
+    primary_artist = re.split(r"[,;&/]+", artist)[0].strip() if artist else ""
+    query = f"{title} {primary_artist}".strip()
+    if not query:
+        return None
+
+    search_url = _U1 % urllib.parse.quote(query)
+    try:
+        s_data = json.loads(_http(search_url))
+    except Exception:
+        return None
+
+    info = s_data.get("data", {}).get("info", [])
+    if not info:
+        return None
+
+    target_artists = [norm(a) for a in re.split(r"[,;&/]+", artist) if len(norm(a)) > 1] if artist else []
+    best_song = _pick_best(
+        info,
+        lambda s: (s.get("songname", ""), s.get("singername", ""), s.get("duration", 0)) if s.get("hash") else None,
+        title, artist, target_duration)
+    if not best_song:
         return None
 
     song_hash = best_song.get("hash")
@@ -122,10 +160,8 @@ def fetch_p1(title, artist="", target_duration=0):
         return None
 
     k_url = _U2 % song_hash
-    req2 = urllib.request.Request(k_url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req2, timeout=4) as resp2:
-            k_data = json.loads(resp2.read())
+        k_data = json.loads(_http(k_url))
     except Exception:
         return None
 
@@ -161,10 +197,8 @@ def fetch_p1(title, artist="", target_duration=0):
         return None
 
     d_url = _U3 % (cand_id, accesskey)
-    req3 = urllib.request.Request(d_url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req3, timeout=4) as resp3:
-            d_data = json.loads(resp3.read())
+        d_data = json.loads(_http(d_url))
     except Exception:
         return None
 
@@ -185,7 +219,7 @@ def fetch_p1(title, artist="", target_duration=0):
         return None
 
 # ==============================================================================
-# Provider 2: QRC (Pure Python 3DES Cipher with S-Box modifications)
+# Provider 2 (Pure Python 3DES Cipher with S-Box modifications)
 # ==============================================================================
 def _bit_num(a, b, c):
     byte_index = (b // 32) * 4 + 3 - (b % 32) // 8
@@ -292,54 +326,84 @@ def _inv_ip(state, in_bytes):
     )
     return in_bytes
 
-def _f(state, sub_key):
+def _expand_raw(state):
     lrgstate = [0] * 6
-    lrgstate[0] = ((_bit_num_int_r(state, 31, 7) | _bit_num_int_r(state, 0, 6) |
-                    _bit_num_int_r(state, 1, 5) | _bit_num_int_r(state, 2, 4) |
-                    _bit_num_int_r(state, 3, 3) | _bit_num_int_r(state, 4, 2) |
-                    _bit_num_int_r(state, 3, 1) | _bit_num_int_r(state, 4, 0)) ^ sub_key[0])
-    lrgstate[1] = ((_bit_num_int_r(state, 5, 7) | _bit_num_int_r(state, 6, 6) |
-                    _bit_num_int_r(state, 7, 5) | _bit_num_int_r(state, 8, 4) |
-                    _bit_num_int_r(state, 7, 3) | _bit_num_int_r(state, 8, 2) |
-                    _bit_num_int_r(state, 9, 1) | _bit_num_int_r(state, 10, 0)) ^ sub_key[1])
-    lrgstate[2] = ((_bit_num_int_r(state, 11, 7) | _bit_num_int_r(state, 12, 6) |
-                    _bit_num_int_r(state, 11, 5) | _bit_num_int_r(state, 12, 4) |
-                    _bit_num_int_r(state, 13, 3) | _bit_num_int_r(state, 14, 2) |
-                    _bit_num_int_r(state, 15, 1) | _bit_num_int_r(state, 16, 0)) ^ sub_key[2])
-    lrgstate[3] = ((_bit_num_int_r(state, 15, 7) | _bit_num_int_r(state, 16, 6) |
-                    _bit_num_int_r(state, 17, 5) | _bit_num_int_r(state, 18, 4) |
-                    _bit_num_int_r(state, 19, 3) | _bit_num_int_r(state, 20, 2) |
-                    _bit_num_int_r(state, 19, 1) | _bit_num_int_r(state, 20, 0)) ^ sub_key[3])
-    lrgstate[4] = ((_bit_num_int_r(state, 21, 7) | _bit_num_int_r(state, 22, 6) |
-                    _bit_num_int_r(state, 23, 5) | _bit_num_int_r(state, 24, 4) |
-                    _bit_num_int_r(state, 23, 3) | _bit_num_int_r(state, 24, 2) |
-                    _bit_num_int_r(state, 25, 1) | _bit_num_int_r(state, 26, 0)) ^ sub_key[4])
-    lrgstate[5] = ((_bit_num_int_r(state, 27, 7) | _bit_num_int_r(state, 28, 6) |
-                    _bit_num_int_r(state, 27, 5) | _bit_num_int_r(state, 28, 4) |
-                    _bit_num_int_r(state, 29, 3) | _bit_num_int_r(state, 30, 2) |
-                    _bit_num_int_r(state, 31, 1) | _bit_num_int_r(state, 0, 0)) ^ sub_key[5])
+    lrgstate[0] = (_bit_num_int_r(state, 31, 7) | _bit_num_int_r(state, 0, 6) |
+                   _bit_num_int_r(state, 1, 5) | _bit_num_int_r(state, 2, 4) |
+                   _bit_num_int_r(state, 3, 3) | _bit_num_int_r(state, 4, 2) |
+                   _bit_num_int_r(state, 3, 1) | _bit_num_int_r(state, 4, 0))
+    lrgstate[1] = (_bit_num_int_r(state, 5, 7) | _bit_num_int_r(state, 6, 6) |
+                   _bit_num_int_r(state, 7, 5) | _bit_num_int_r(state, 8, 4) |
+                   _bit_num_int_r(state, 7, 3) | _bit_num_int_r(state, 8, 2) |
+                   _bit_num_int_r(state, 9, 1) | _bit_num_int_r(state, 10, 0))
+    lrgstate[2] = (_bit_num_int_r(state, 11, 7) | _bit_num_int_r(state, 12, 6) |
+                   _bit_num_int_r(state, 11, 5) | _bit_num_int_r(state, 12, 4) |
+                   _bit_num_int_r(state, 13, 3) | _bit_num_int_r(state, 14, 2) |
+                   _bit_num_int_r(state, 15, 1) | _bit_num_int_r(state, 16, 0))
+    lrgstate[3] = (_bit_num_int_r(state, 15, 7) | _bit_num_int_r(state, 16, 6) |
+                   _bit_num_int_r(state, 17, 5) | _bit_num_int_r(state, 18, 4) |
+                   _bit_num_int_r(state, 19, 3) | _bit_num_int_r(state, 20, 2) |
+                   _bit_num_int_r(state, 19, 1) | _bit_num_int_r(state, 20, 0))
+    lrgstate[4] = (_bit_num_int_r(state, 21, 7) | _bit_num_int_r(state, 22, 6) |
+                   _bit_num_int_r(state, 23, 5) | _bit_num_int_r(state, 24, 4) |
+                   _bit_num_int_r(state, 23, 3) | _bit_num_int_r(state, 24, 2) |
+                   _bit_num_int_r(state, 25, 1) | _bit_num_int_r(state, 26, 0))
+    lrgstate[5] = (_bit_num_int_r(state, 27, 7) | _bit_num_int_r(state, 28, 6) |
+                   _bit_num_int_r(state, 27, 5) | _bit_num_int_r(state, 28, 4) |
+                   _bit_num_int_r(state, 29, 3) | _bit_num_int_r(state, 30, 2) |
+                   _bit_num_int_r(state, 31, 1) | _bit_num_int_r(state, 0, 0))
+    return lrgstate
 
-    state = (int(_S_BOX1[_s_box_bit(lrgstate[0] >> 2)]) << 28) | \
-            (int(_S_BOX2[_s_box_bit(((lrgstate[0] & 0x03) << 4) | (lrgstate[1] >> 4))]) << 24) | \
-            (int(_S_BOX3[_s_box_bit(((lrgstate[1] & 0x0f) << 2) | (lrgstate[2] >> 6))]) << 20) | \
-            (int(_S_BOX4[_s_box_bit(lrgstate[2] & 0x3f)]) << 16) | \
-            (int(_S_BOX5[_s_box_bit(lrgstate[3] >> 2)]) << 12) | \
-            (int(_S_BOX6[_s_box_bit(((lrgstate[3] & 0x03) << 4) | (lrgstate[4] >> 4))]) << 8) | \
-            (int(_S_BOX7[_s_box_bit(((lrgstate[4] & 0x0f) << 2) | (lrgstate[5] >> 6))]) << 4) | \
-            int(_S_BOX8[_s_box_bit(lrgstate[5] & 0x3f)])
+def _perm_raw(state):
+    return (_bit_num_int_l(state, 15, 0) | _bit_num_int_l(state, 6, 1) | _bit_num_int_l(state, 19, 2) |
+            _bit_num_int_l(state, 20, 3) | _bit_num_int_l(state, 28, 4) | _bit_num_int_l(state, 11, 5) |
+            _bit_num_int_l(state, 27, 6) | _bit_num_int_l(state, 16, 7) | _bit_num_int_l(state, 0, 8) |
+            _bit_num_int_l(state, 14, 9) | _bit_num_int_l(state, 22, 10) | _bit_num_int_l(state, 25, 11) |
+            _bit_num_int_l(state, 4, 12) | _bit_num_int_l(state, 17, 13) | _bit_num_int_l(state, 30, 14) |
+            _bit_num_int_l(state, 9, 15) | _bit_num_int_l(state, 1, 16) | _bit_num_int_l(state, 7, 17) |
+            _bit_num_int_l(state, 23, 18) | _bit_num_int_l(state, 13, 19) | _bit_num_int_l(state, 31, 20) |
+            _bit_num_int_l(state, 26, 21) | _bit_num_int_l(state, 2, 22) | _bit_num_int_l(state, 8, 23) |
+            _bit_num_int_l(state, 18, 24) | _bit_num_int_l(state, 12, 25) | _bit_num_int_l(state, 29, 26) |
+            _bit_num_int_l(state, 5, 27) | _bit_num_int_l(state, 21, 28) | _bit_num_int_l(state, 10, 29) |
+            _bit_num_int_l(state, 3, 30) | _bit_num_int_l(state, 24, 31))
 
-    state = (_bit_num_int_l(state, 15, 0) | _bit_num_int_l(state, 6, 1) | _bit_num_int_l(state, 19, 2) |
-             _bit_num_int_l(state, 20, 3) | _bit_num_int_l(state, 28, 4) | _bit_num_int_l(state, 11, 5) |
-             _bit_num_int_l(state, 27, 6) | _bit_num_int_l(state, 16, 7) | _bit_num_int_l(state, 0, 8) |
-             _bit_num_int_l(state, 14, 9) | _bit_num_int_l(state, 22, 10) | _bit_num_int_l(state, 25, 11) |
-             _bit_num_int_l(state, 4, 12) | _bit_num_int_l(state, 17, 13) | _bit_num_int_l(state, 30, 14) |
-             _bit_num_int_l(state, 9, 15) | _bit_num_int_l(state, 1, 16) | _bit_num_int_l(state, 7, 17) |
-             _bit_num_int_l(state, 23, 18) | _bit_num_int_l(state, 13, 19) | _bit_num_int_l(state, 31, 20) |
-             _bit_num_int_l(state, 26, 21) | _bit_num_int_l(state, 2, 22) | _bit_num_int_l(state, 8, 23) |
-             _bit_num_int_l(state, 18, 24) | _bit_num_int_l(state, 12, 25) | _bit_num_int_l(state, 29, 26) |
-             _bit_num_int_l(state, 5, 27) | _bit_num_int_l(state, 21, 28) | _bit_num_int_l(state, 10, 29) |
-             _bit_num_int_l(state, 3, 30) | _bit_num_int_l(state, 24, 31))
-    return state
+# All DES stages above are pure bit permutations / expansions, so they can be folded into
+# byte-indexed lookup tables generated from the reference bit-twiddling code. Built lazily
+# (only provider 2 needs them) and reused for every block.
+_TABLES = None
+
+def _tables():
+    global _TABLES
+    if _TABLES is not None:
+        return _TABLES
+
+    exp = [[0] * 256 for _ in range(4)]
+    for b in range(4):
+        for v in range(256):
+            exp[b][v] = int.from_bytes(bytes(_expand_raw(v << (24 - 8 * b))), "big")
+
+    boxes = (_S_BOX1, _S_BOX2, _S_BOX3, _S_BOX4, _S_BOX5, _S_BOX6, _S_BOX7, _S_BOX8)
+    sp = []
+    for g in range(8):
+        sp.append([_perm_raw(int(boxes[g][_s_box_bit(x)]) << (28 - 4 * g)) for x in range(64)])
+
+    ip = [[0] * 256 for _ in range(8)]
+    iip = [[0] * 256 for _ in range(8)]
+    for b in range(8):
+        for v in range(256):
+            buf = bytearray(8)
+            buf[b] = v
+            st = [0, 0]
+            _ip(st, buf)
+            ip[b][v] = (st[0] << 32) | st[1]
+
+            w = v << (56 - 8 * b)
+            out = bytearray(8)
+            _inv_ip([w >> 32, w & 0xffffffff], out)
+            iip[b][v] = int.from_bytes(out, "big")
+
+    _TABLES = (exp, sp, ip, iip)
+    return _TABLES
 
 def _des_key_setup(key, schedule, decrypt=False):
     key_rnd_shift = [1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1]
@@ -365,39 +429,42 @@ def _des_key_setup(key, schedule, decrypt=False):
         for j in range(24, 48):
             schedule[to_gen][j // 8] |= _bit_num_int_r(d, key_compression[j] - 27, 7 - (j % 8))
 
-def _des_crypt(input_bytes, key_schedule):
-    state = [0, 0]
-    _ip(state, input_bytes)
-    for idx in range(15):
-        t = state[1]
-        i = _f(state[1], key_schedule[idx])
-        state[1] = i ^ state[0]
-        state[0] = t
-    state[0] = _f(state[1], key_schedule[15]) ^ state[0]
-    _inv_ip(state, input_bytes)
-    return input_bytes
+def _crypt_all(buff, key, length, decrypt):
+    sched = [[0] * 6 for _ in range(16)]
+    _des_key_setup(bytearray(key), sched, decrypt=decrypt)
+    ks = [int.from_bytes(bytes(k), "big") for k in sched]
+    exp, sp, ip, iip = _tables()
+    e0, e1, e2, e3 = exp
+    sp0, sp1, sp2, sp3, sp4, sp5, sp6, sp7 = sp
+    ip0, ip1, ip2, ip3, ip4, ip5, ip6, ip7 = ip
+    ii0, ii1, ii2, ii3, ii4, ii5, ii6, ii7 = iip
+
+    out = bytearray()
+    for i in range(0, length - 7, 8):
+        b = buff[i:i + 8]
+        w = (ip0[b[0]] | ip1[b[1]] | ip2[b[2]] | ip3[b[3]] |
+             ip4[b[4]] | ip5[b[5]] | ip6[b[6]] | ip7[b[7]])
+        s0 = w >> 32
+        s1 = w & 0xffffffff
+        for r in range(16):
+            x = (e0[s1 >> 24] | e1[(s1 >> 16) & 255] | e2[(s1 >> 8) & 255] | e3[s1 & 255]) ^ ks[r]
+            f = (sp0[x >> 42] | sp1[(x >> 36) & 63] | sp2[(x >> 30) & 63] | sp3[(x >> 24) & 63] |
+                 sp4[(x >> 18) & 63] | sp5[(x >> 12) & 63] | sp6[(x >> 6) & 63] | sp7[x & 63])
+            if r < 15:
+                s0, s1 = s1, f ^ s0
+            else:
+                s0 = f ^ s0
+        o = (s0 << 32) | s1
+        res = (ii0[(o >> 56) & 255] | ii1[(o >> 48) & 255] | ii2[(o >> 40) & 255] | ii3[(o >> 32) & 255] |
+               ii4[(o >> 24) & 255] | ii5[(o >> 16) & 255] | ii6[(o >> 8) & 255] | ii7[o & 255])
+        out += res.to_bytes(8, "big")
+    return out
 
 def _func_des(buff, key, length):
-    sched = [[0] * 6 for _ in range(16)]
-    _des_key_setup(bytearray(key), sched, decrypt=False)
-    out = bytearray()
-    for i in range(0, length, 8):
-        chunk = buff[i:i + 8]
-        if len(chunk) < 8:
-            break
-        out += _des_crypt(chunk, sched)
-    return out
+    return _crypt_all(buff, key, length, False)
 
 def _func_ddes(buff, key, length):
-    sched = [[0] * 6 for _ in range(16)]
-    _des_key_setup(bytearray(key), sched, decrypt=True)
-    out = bytearray()
-    for i in range(0, length, 8):
-        chunk = buff[i:i + 8]
-        if len(chunk) < 8:
-            break
-        out += _des_crypt(chunk, sched)
-    return out
+    return _crypt_all(buff, key, length, True)
 
 def _qrc_decode(content):
     length = len(content)
@@ -459,10 +526,8 @@ def fetch_p2(title, artist="", target_duration=0):
             }
         }
     }
-    req = urllib.request.Request(_U4, data=json.dumps(body).encode("utf-8"), headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            s_data = json.loads(resp.read().decode("utf-8"))
+        s_data = json.loads(_http(_U4, data=json.dumps(body).encode("utf-8")))
     except Exception:
         return None
 
@@ -470,74 +535,17 @@ def fetch_p2(title, artist="", target_duration=0):
     if not songs:
         return None
 
-    target_artists = [norm(a) for a in re.split(r"[,;&/]+", artist) if len(norm(a)) > 1] if artist else []
-    target_title_norm = norm(title)
-    if not target_title_norm:
-        return None
-
-    best_song = None
-    best_score = -999999
-
-    for s in songs:
-        s_mid = s.get("mid")
-        s_id = s.get("id")
-        if not s_mid and not s_id:
-            continue
-
-        s_name = s.get("name", "")
-        singers = " ".join([sg.get("name", "") for sg in s.get("singer", [])])
-        s_dur = s.get("interval", 0)
-
-        s_title_norm = norm(s_name)
-        s_artist_norm = norm(singers)
-
-        title_matches = False
-        if s_title_norm == target_title_norm:
-            title_matches = True
-        elif len(target_title_norm) > 2 and (target_title_norm in s_title_norm or s_title_norm in target_title_norm):
-            title_matches = True
-
-        if not title_matches:
-            continue
-
-        score = 50 if s_title_norm == target_title_norm else 25
-
-        if target_artists:
-            matched_artist = False
-            for ta in target_artists:
-                if s_artist_norm == ta:
-                    score += 60
-                    matched_artist = True
-                    break
-                elif ta in s_artist_norm or s_artist_norm in ta:
-                    score += 30
-                    matched_artist = True
-                    break
-            if not matched_artist:
-                score -= 20
-
-        if target_duration > 0 and s_dur > 0:
-            diff = abs(s_dur - target_duration)
-            if diff <= 1:
-                score += 40
-            elif diff <= 3:
-                score += 20
-            elif diff <= 6:
-                score += 10
-            elif diff > 15:
-                score -= 40
-
-        if score > best_score:
-            best_score = score
-            best_song = s
-
-    if not best_song or best_score < 25:
+    best_song = _pick_best(
+        songs,
+        lambda s: (s.get("name", ""), " ".join(sg.get("name", "") for sg in s.get("singer", [])), s.get("interval", 0)) if (s.get("mid") or s.get("id")) else None,
+        title, artist, target_duration)
+    if not best_song:
         return None
 
     song_id = best_song.get("id")
     song_mid = best_song.get("mid")
 
-    # Step 2: Download QRC
+    # Step 2: Download
     hex_payload = ""
     for d_url in [
         (_U5 % song_id) if song_id else None,
@@ -545,14 +553,12 @@ def fetch_p2(title, artist="", target_duration=0):
     ]:
         if not d_url:
             continue
-        req2 = urllib.request.Request(d_url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://y.qq.com/"})
         try:
-            with urllib.request.urlopen(req2, timeout=4) as resp2:
-                txt = resp2.read().decode("utf-8", errors="ignore")
-                m = re.findall(r"<content[^>]*><!\[CDATA\[(.*?)\]\]></content>", txt)
-                if m and len(m[0]) > 0:
-                    hex_payload = m[0]
-                    break
+            txt = _http(d_url, headers={"Referer": _P2_REF}).decode("utf-8", errors="ignore")
+            m = _CONTENT_RE.search(txt)
+            if m and m.group(1):
+                hex_payload = m.group(1)
+                break
         except Exception:
             continue
 
@@ -574,10 +580,10 @@ def fetch_p2(title, artist="", target_duration=0):
         return None
 
 # ==============================================================================
-# Provider 3: YRC (No encryption needed)
+# Provider 3
 # ==============================================================================
-def _normalize_yrc(raw_yrc):
-    lines = raw_yrc.split("\n")
+def _normalize_p3(raw_lyrics):
+    lines = raw_lyrics.split("\n")
     out = []
     for line in lines:
         line = line.strip()
@@ -616,11 +622,9 @@ def fetch_p3(title, artist="", target_duration=0):
         return None
 
     search_url = _U6 % urllib.parse.quote(query)
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": _NE_REF, "Cookie": "os=pc"}
-    req = urllib.request.Request(search_url, headers=headers)
+    headers = {"Referer": _NE_REF, "Cookie": "os=pc"}
     try:
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            s_data = json.loads(resp.read().decode("utf-8"))
+        s_data = json.loads(_http(search_url, headers=headers))
     except Exception:
         return None
 
@@ -628,67 +632,11 @@ def fetch_p3(title, artist="", target_duration=0):
     if not songs:
         return None
 
-    target_artists = [norm(a) for a in re.split(r"[,;&/]+", artist) if len(norm(a)) > 1] if artist else []
-    target_title_norm = norm(title)
-    if not target_title_norm:
-        return None
-
-    best_song = None
-    best_score = -999999
-
-    for s in songs:
-        s_id = s.get("id")
-        if not s_id:
-            continue
-
-        s_name = s.get("name", "")
-        singers = " ".join([sg.get("name", "") for sg in s.get("ar", [])])
-        s_dur = int((s.get("dt", 0)) / 1000)
-
-        s_title_norm = norm(s_name)
-        s_artist_norm = norm(singers)
-
-        title_matches = False
-        if s_title_norm == target_title_norm:
-            title_matches = True
-        elif len(target_title_norm) > 2 and (target_title_norm in s_title_norm or s_title_norm in target_title_norm):
-            title_matches = True
-
-        if not title_matches:
-            continue
-
-        score = 50 if s_title_norm == target_title_norm else 25
-
-        if target_artists:
-            matched_artist = False
-            for ta in target_artists:
-                if s_artist_norm == ta:
-                    score += 60
-                    matched_artist = True
-                    break
-                elif ta in s_artist_norm or s_artist_norm in ta:
-                    score += 30
-                    matched_artist = True
-                    break
-            if not matched_artist:
-                score -= 20
-
-        if target_duration > 0 and s_dur > 0:
-            diff = abs(s_dur - target_duration)
-            if diff <= 1:
-                score += 40
-            elif diff <= 3:
-                score += 20
-            elif diff <= 6:
-                score += 10
-            elif diff > 15:
-                score -= 40
-
-        if score > best_score:
-            best_score = score
-            best_song = s
-
-    if not best_song or best_score < 25:
+    best_song = _pick_best(
+        songs,
+        lambda s: (s.get("name", ""), " ".join(sg.get("name", "") for sg in s.get("ar", [])), int(s.get("dt", 0) / 1000)) if s.get("id") else None,
+        title, artist, target_duration)
+    if not best_song:
         return None
 
     song_id = best_song.get("id")
@@ -696,163 +644,35 @@ def fetch_p3(title, artist="", target_duration=0):
         return None
 
     lyric_url = _U7 % song_id
-    req2 = urllib.request.Request(lyric_url, headers=headers)
     try:
-        with urllib.request.urlopen(req2, timeout=4) as resp2:
-            l_data = json.loads(resp2.read().decode("utf-8"))
+        l_data = json.loads(_http(lyric_url, headers=headers))
     except Exception:
         return None
 
-    raw_yrc = l_data.get("yrc", {}).get("lyric", "")
-    if not raw_yrc or "(" not in raw_yrc:
+    raw_lyrics = l_data.get(_d("797263"), {}).get("lyric", "")
+    if not raw_lyrics or "(" not in raw_lyrics:
         return None
 
     try:
-        normalized = _normalize_yrc(raw_yrc)
+        normalized = _normalize_p3(raw_lyrics)
         return normalized
     except Exception:
         return None
 
 # ==============================================================================
-# Main Dispatcher: P1 -> P2 -> P3
+# Helpers for the orchestrator (fetch_lyrics.py)
 # ==============================================================================
-_CREDIT_RE = re.compile(
-    r"^(lyrics?( by)?|lyricist|composed?( by)?|composer|written( by)?|writer|"
-    r"produced?( by)?|producer|arranged?( by)?|arranger|music( by)?|vocals?( by)?|"
-    r"track\s*[:：\-]|artist\s*[:：\-]|album\s*[:：\-]|synced by|lrc by|source\s*[:：]|"
-    r"mixing( by)?|mixed by|mastering( by)?|mastered by|recorded?( by)?|recording( by)?|"
-    r"engineered by|publisher|label|qqmusic|kugou|netease|163\.com|lrclib|"
-    r"作\s*词|作\s*曲|编\s*曲|制\s*作|监\s*制|录\s*音|混\s*音|母\s*带|演唱|词曲|词\s*[:：]|曲\s*[:：]|"
-    r"统筹|企划|出品|发行|后期|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|原唱|翻唱|伴奏|配唱|乐器|"
-    r"专\s*辑|歌\s*手|歌\s*名|曲\s*名)",
-    re.I
-)
+def slim_lyrics(raw):
+    """Keep only timed lines and [offset:] — drops metadata tags and base64 blobs."""
+    out = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if len(line) > 2 and line[0] == "[" and (line[1].isdigit() or line.startswith("[offset:")):
+            out.append(line)
+    return "\n".join(out)
 
+def is_word_synced(text):
+    return bool(text) and "<" in text and ">" in text
 
-def is_metadata_line(text, time_ms, title="", artist="", has_syllables=False):
-    t = text.strip()
-    if not t or t == "♪":
-        return True
-    if _CREDIT_RE.search(t):
-        return True
-    if not has_syllables and time_ms < 15000:
-        nt = norm(t)
-        ntitle = norm(title)
-        nartist = norm(artist)
-        if nartist and nt == nartist:
-            return True
-        if ntitle and nt == ntitle:
-            return True
-
-        parts = re.split(r"\s*[-–—\/:]\s*", t, maxsplit=1)
-        if len(parts) == 2:
-            p0 = norm(parts[0])
-            p1 = norm(parts[1])
-            if (p0 == ntitle and p1 == nartist) or (p0 == nartist and p1 == ntitle):
-                return True
-            if p0 in ("title", "track", "artist", "singer", "album", "song"):
-                return True
-    return False
-
-_CREDIT_COLON_RE = re.compile(
-    r"^(lyrics?( by)?|composed?( by)?|written( by)?|produced?( by)?|arranged?( by)?|"
-    r"作\s*词|作\s*曲|编\s*曲|制\s*作|演唱|词曲)\s*[:：]",
-    re.I
-)
-
-
-def clean_syllables(lyrics, title="", artist=""):
-    if not lyrics:
-        return ""
-    lines = lyrics.split("\n")
-    cleaned = []
-    seen_first_lyric = False
-
-    for line in lines:
-        line_str = line.strip()
-        if not line_str:
-            continue
-        m_hdr = re.match(r"^\[(?:(\d+):(\d+(?:\.\d+)?)|(\d+)(?:,(\d+))?)\](.*)", line_str)
-        if not m_hdr:
-            if line_str.startswith("[offset:"):
-                cleaned.append(line_str)
-            continue
-
-        if m_hdr.group(1) is not None:
-            time_ms = int(float(m_hdr.group(1)) * 60000 + float(m_hdr.group(2)) * 1000)
-        else:
-            time_ms = int(m_hdr.group(3))
-        rest = m_hdr.group(5)
-        has_syl = "<" in rest and ">" in rest
-        plain_text = re.sub(r"<[^>]+>", "", rest)
-        plain_text = re.sub(r"\(\d+,\d+(?:,\d+)?\)", "", plain_text).strip()
-
-        if is_metadata_line(plain_text, time_ms, title, artist, has_syllables=has_syl):
-            if not seen_first_lyric:
-                continue
-            if _CREDIT_COLON_RE.search(plain_text):
-                continue
-
-        seen_first_lyric = True
-        cleaned.append(line_str)
-
-    return "\n".join(cleaned)
-
-def report_status(msg):
-    try:
-        sys.stderr.write(f"STATUS:{msg}\n")
-        sys.stderr.flush()
-    except Exception:
-        pass
-
-def fetch_syllables(title, artist="", target_duration=0):
-    q = queue.Queue()
-    providers = [
-        ("src1", fetch_p1),
-        ("src2", fetch_p2),
-        ("src3", fetch_p3),
-    ]
-
-    def worker(src, fn):
-        try:
-            r = fn(title, artist, target_duration)
-            if r and ("<" in r and ">" in r):
-                q.put((src, r))
-                return
-        except Exception:
-            pass
-        q.put((src, None))
-
-    report_status("Searching…")
-    for src, fn in providers:
-        threading.Thread(target=worker, args=(src, fn), daemon=True).start()
-
-    active = len(providers)
-    while active > 0:
-        try:
-            src, raw = q.get(timeout=4.5)
-            active -= 1
-            if raw:
-                cleaned = clean_syllables(raw, title, artist)
-                if cleaned and ("<" in cleaned and ">" in cleaned):
-                    return cleaned
-        except queue.Empty:
-            break
-
-    return None
-
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        os._exit(1)
-
-    title = sys.argv[1]
-    artist = sys.argv[2] if len(sys.argv) > 2 else ""
-    target_duration = int(float(sys.argv[3])) if len(sys.argv) > 3 else 0
-
-    res = fetch_syllables(title, artist, target_duration)
-    if res and ("<" in res and ">" in res):
-        sys.stdout.write(res)
-        sys.stdout.flush()
-        os._exit(0)
-    else:
-        os._exit(1)
+# Word-synced providers, best first: p1, p2, p3
+PROVIDERS = (("src1", fetch_p1), ("src2", fetch_p2), ("src3", fetch_p3))

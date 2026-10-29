@@ -19,20 +19,17 @@ Singleton {
     component Notif: QtObject {
         id: wrapper
         required property int notificationId // Could just be `id` but it conflicts with the default prop in QtObject
-        property Notification notification
-        property list<var> actions: notification?.actions.map((action) => ({
-            "identifier": action.identifier,
-            "text": action.text,
-        })) ?? []
+        property Notification notification: null
+        property list<var> actions: []
         property bool popup: false
-        property bool isTransient: notification?.hints.transient ?? false
-        property string appIcon: notification?.appIcon ?? ""
-        property string appName: notification?.appName ?? ""
-        property string body: notification?.body ?? ""
-        property string image: notification?.image ?? ""
-        property string summary: notification?.summary ?? ""
-        property double time
-        property string urgency: notification?.urgency.toString() ?? "normal"
+        property bool isTransient: false
+        property string appIcon: ""
+        property string appName: ""
+        property string body: ""
+        property string image: ""
+        property string summary: ""
+        property double time: 0
+        property string urgency: "normal"
         property Timer timer
 
         onNotificationChanged: {
@@ -167,6 +164,17 @@ Singleton {
             const newNotifObject = notifComponent.createObject(root, {
                 "notificationId": notification.id + root.idOffset,
                 "notification": notification,
+                "actions": notification.actions.map((action) => ({
+                    "identifier": action.identifier,
+                    "text": action.text,
+                })),
+                "appIcon": notification.appIcon ?? "",
+                "appName": notification.appName ?? "",
+                "body": notification.body ?? "",
+                "image": notification.image ?? "",
+                "summary": notification.summary ?? "",
+                "isTransient": notification.hints?.transient ?? false,
+                "urgency": notification.urgency?.toString() ?? "normal",
                 "time": Date.now(),
             });
 			root.list = [...root.list, newNotifObject];
@@ -276,13 +284,13 @@ Singleton {
                 return notifComponent.createObject(root, {
                     "notificationId": notif.notificationId,
                     "actions": [], // Notification actions are meaningless if they're not tracked by the server or the sender is dead
-                    "appIcon": notif.appIcon,
-                    "appName": notif.appName,
-                    "body": notif.body,
-                    "image": notif.image,
-                    "summary": notif.summary,
-                    "time": notif.time,
-                    "urgency": notif.urgency,
+                    "appIcon": notif.appIcon ?? "",
+                    "appName": notif.appName ?? "",
+                    "body": notif.body ?? "",
+                    "image": notif.image ?? "",
+                    "summary": notif.summary ?? "",
+                    "time": notif.time ?? 0,
+                    "urgency": notif.urgency ?? "normal",
                 });
             });
             // Find largest notificationId

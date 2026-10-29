@@ -50,4 +50,14 @@ Singleton {
             root.superDown = false
         }
     }
+
+    Connections {
+        target: Hyprland
+
+        function onRawEvent(event) {
+            if (root.superDown) {
+                root.superReleaseMightTrigger = false;
+            }
+        }
+    }
 }

@@ -267,7 +267,7 @@ Item {
                         anchors.left: parent.left
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
-                        width: Math.min(parent.implicitWidth, Math.max(0, Math.round(parent.implicitWidth * LyricsService.currentLineProgress)))
+                        width: Math.min(parent.implicitWidth, Math.max(0, parent.implicitWidth * LyricsService.currentLineProgress))
                         clip: true
 
                         StyledText {
@@ -276,7 +276,7 @@ Item {
                             anchors.bottom: parent.bottom
                             width: topBarMusicText.implicitWidth
                             textFormat: Text.StyledText
-                            text: LyricsService.currentLyricLineLit
+                            text: visible ? LyricsService.currentLyricLineLit : ""
                         }
                     }
 
@@ -311,7 +311,7 @@ Item {
                             x: -multilineSlideOverlay.x
                             width: topBarMusicText.implicitWidth
                             textFormat: Text.StyledText
-                            text: LyricsService.currentLyricLineLit
+                            text: visible ? LyricsService.currentLyricLineLit : ""
                         }
                     }
                 }
@@ -321,7 +321,7 @@ Item {
                     visible: topBarTextContainer.isOverflowing && topBarMarqueeAnim.running
                     textFormat: root.hasLyrics ? Text.StyledText : Text.PlainText
                     color: Appearance.colors.colSubtext
-                    text: topBarTextContainer.displayText
+                    text: visible ? topBarTextContainer.displayText : ""
 
                     Item {
                         id: lyricClipOverlayDup
@@ -329,7 +329,7 @@ Item {
                         anchors.left: parent.left
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
-                        width: Math.min(parent.implicitWidth, Math.max(0, Math.round(parent.implicitWidth * LyricsService.currentLineProgress)))
+                        width: Math.min(parent.implicitWidth, Math.max(0, parent.implicitWidth * LyricsService.currentLineProgress))
                         clip: true
 
                         StyledText {
@@ -338,7 +338,7 @@ Item {
                             anchors.bottom: parent.bottom
                             width: topBarMusicTextDup.implicitWidth
                             textFormat: Text.StyledText
-                            text: LyricsService.currentLyricLineLit
+                            text: visible ? LyricsService.currentLyricLineLit : ""
                         }
                     }
 
@@ -357,7 +357,7 @@ Item {
                             x: -multilineSlideOverlayDup.x
                             width: topBarMusicTextDup.implicitWidth
                             textFormat: Text.StyledText
-                            text: LyricsService.currentLyricLineLit
+                            text: visible ? LyricsService.currentLyricLineLit : ""
                         }
                     }
                 }

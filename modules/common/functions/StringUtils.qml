@@ -218,7 +218,10 @@ Singleton {
         artist = artist.replace(/\s*[\[［][^\]］]*[\]］]\s*/g, " ");
         artist = artist.replace(/\s*[【〖][^】〗]*[】〗]\s*/g, " ");
         if (/[a-zA-Z]/.test(artist)) {
-            artist = artist.replace(/\s*[\/\-–—]\s*[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af\s]+$/g, "");
+            // Drop a CJK translation of a Latin name: "Name / 中文", "Name 中文" or "中文 Name"
+            artist = artist.replace(/\s*[\/\-–—]\s*[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u00b7\u30fb\s]+$/g, "");
+            artist = artist.replace(/\s+[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u00b7\u30fb][\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u00b7\u30fb\s]*$/, "");
+            artist = artist.replace(/^[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u00b7\u30fb][\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u00b7\u30fb\s]*\s+(?=[a-zA-Z])/, "");
         }
         return artist.replace(/\s+/g, " ").trim();
     }

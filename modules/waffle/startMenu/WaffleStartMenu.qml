@@ -10,6 +10,7 @@ import qs.modules.common.widgets
 
 Scope {
     id: root
+    property real superPressTime: 0
 
     Connections {
         target: GlobalStates
@@ -113,11 +114,13 @@ Scope {
         description: "Toggles search on release"
 
         onPressed: {
+            root.superPressTime = Date.now();
             GlobalStates.superReleaseMightTrigger = true;
         }
 
         onReleased: {
-            if (!GlobalStates.superReleaseMightTrigger) {
+            var elapsed = Date.now() - root.superPressTime;
+            if (!GlobalStates.superReleaseMightTrigger || elapsed > 350) {
                 GlobalStates.superReleaseMightTrigger = true;
                 return;
             }
@@ -138,6 +141,7 @@ Scope {
         description: "Toggle clipboard query on overview widget"
 
         onPressed: {
+            GlobalStates.superReleaseMightTrigger = false;
             root.toggleClipboard();
         }
     }
@@ -147,6 +151,7 @@ Scope {
         description: "Toggle emoji query on overview widget"
 
         onPressed: {
+            GlobalStates.superReleaseMightTrigger = false;
             root.toggleEmojis();
         }
     }

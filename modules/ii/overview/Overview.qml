@@ -14,6 +14,7 @@ import Quickshell.Hyprland
 Scope {
     id: overviewScope
     property bool dontAutoCancelSearch: false
+    property real superPressTime: 0
 
     PanelWindow {
         id: panelWindow
@@ -104,6 +105,7 @@ Scope {
     }
 
     function toggleClipboard() {
+        GlobalStates.superReleaseMightTrigger = false;
         if (GlobalStates.overviewOpen && overviewScope.dontAutoCancelSearch) {
             GlobalStates.overviewOpen = false;
             return;
@@ -114,6 +116,7 @@ Scope {
     }
 
     function toggleEmojis() {
+        GlobalStates.superReleaseMightTrigger = false;
         if (GlobalStates.overviewOpen && overviewScope.dontAutoCancelSearch) {
             GlobalStates.overviewOpen = false;
             return;
@@ -175,11 +178,14 @@ Scope {
         description: "Toggles search on release"
 
         onPressed: {
+            overviewScope.superPressTime = Date.now();
             GlobalStates.superReleaseMightTrigger = true;
         }
 
         onReleased: {
-            if (!GlobalStates.superReleaseMightTrigger) {
+            var elapsed = Date.now() - overviewScope.superPressTime;
+            // Tap duration should be quick (< 350ms). Holds and combos cancel it.
+            if (!GlobalStates.superReleaseMightTrigger || elapsed > 350) {
                 GlobalStates.superReleaseMightTrigger = true;
                 return;
             }
@@ -199,6 +205,7 @@ Scope {
         description: "Toggle clipboard query on overview widget"
 
         onPressed: {
+            GlobalStates.superReleaseMightTrigger = false;
             overviewScope.toggleClipboard();
         }
     }
@@ -208,6 +215,7 @@ Scope {
         description: "Toggle emoji query on overview widget"
 
         onPressed: {
+            GlobalStates.superReleaseMightTrigger = false;
             overviewScope.toggleEmojis();
         }
     }
