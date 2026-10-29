@@ -188,6 +188,15 @@ Item { // Player instance
             color: blendedColors.colPrimary
         }
 
+        MouseArea {
+            anchors.fill: parent
+            onClicked: {
+                if (root.player && MprisController.activePlayer !== root.player) {
+                    MprisController.setActivePlayer(root.player);
+                }
+            }
+        }
+
         RowLayout {
             anchors.fill: parent
             anchors.margins: 13

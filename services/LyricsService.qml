@@ -44,7 +44,7 @@ Singleton {
     property real lastKnownTimestamp: 0
     property real lastMprisPos: -1
     property real lastWordSyncPos: 0
-    property real syncLeadSeconds: 0.25 // Lead time in seconds (switches to next line slightly earlier)
+    property real syncLeadSeconds: 0.16 // Lead time in seconds (switches to next line slightly earlier)
 
     // Precomputed lyric style colors: reactive to theme/wallpaper changes, evaluated once (0 overhead in tick)
     readonly property string colPastHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.35).toString()
@@ -225,12 +225,7 @@ Singleton {
                 let parsed = root.parseLyricsString(output);
                 if (parsed && parsed.length > 0 && parsed.some(function(l) { return l.isWordSynced; })) {
                     root.lyricCache[cacheKey] = { syncedLyrics: output, lines: parsed, hasWordSync: true };
-                    root.lyricLines = parsed;
-                    root.hasWordSync = true;
-                    root.hasUnsyncedLyrics = false;
-                    root.buildGroupIndex();
-                    root.loading = false;
-                    root.loadingStatus = "";
+                    root.precompileAndSetLyrics(parsed, true);
                     return;
                 }
             }
@@ -646,9 +641,31 @@ Singleton {
                     lastW.end = p.endTime;
                 }
             }
+            root.precompileLineMetrics(p);
         }
 
         return parsed;
+    }
+
+    function precompileAndSetLyrics(parsed, hasWordSync) {
+        if (!parsed || parsed.length === 0) {
+            root.lyricLines = [];
+            root.lyricGroupIndex = [];
+            root.hasWordSync = false;
+            root.loading = false;
+            root.loadingStatus = "";
+            return;
+        }
+        root.bulletPixelWidth = root.measurePixelWidth(" • ");
+        for (let i = 0; i < parsed.length; i++) {
+            root.precompileLineMetrics(parsed[i]);
+        }
+        root.lyricLines = parsed;
+        root.hasWordSync = hasWordSync;
+        root.hasUnsyncedLyrics = false;
+        root.buildGroupIndex();
+        root.loading = false;
+        root.loadingStatus = "";
     }
 
     function parseLyricsResponse(data) {
@@ -667,9 +684,7 @@ Singleton {
 
         root.hasUnsyncedLyrics = (!parsed || parsed.length === 0) && ((data.plainLyrics && data.plainLyrics.length > 0) || (data.syncedLyrics && data.syncedLyrics.length > 0));
         if (parsed && parsed.length > 0) {
-            root.lyricLines = parsed;
-            root.hasWordSync = parsed.some(function(l) { return l.isWordSynced; });
-            root.buildGroupIndex();
+            root.precompileAndSetLyrics(parsed, parsed.some(function(l) { return l.isWordSynced; }));
         } else {
             root.lyricLines = [];
             root.lyricGroupIndex = [];
@@ -728,7 +743,7 @@ Singleton {
         if (newTitle !== root.currentTrackName || newArtist !== root.currentArtistName) {
             root.currentTrackName = newTitle;
             root.currentArtistName = newArtist;
-            let initPos = (activePlayer?.position && activePlayer.position < 3.0) ? activePlayer.position : 0;
+            let initPos = activePlayer?.position || 0;
             root.lastMprisPos = initPos;
             root.lastKnownPosition = initPos;
             root.lastKnownTimestamp = Date.now();
@@ -788,13 +803,40 @@ Singleton {
         font.pixelSize: Appearance?.font?.pixelSize?.small ?? 15
     }
 
+    property real bulletPixelWidth: 0
+    property var _repeatSuffixCache: ({})
+
+    Connections {
+        target: Appearance?.font ?? null
+        function onPixelSizeChanged() {
+            root.bulletPixelWidth = root.measurePixelWidth(" • ");
+            root._repeatSuffixCache = ({});
+            root.recompileAllMetrics();
+        }
+        function onFamilyChanged() {
+            root.bulletPixelWidth = root.measurePixelWidth(" • ");
+            root._repeatSuffixCache = ({});
+            root.recompileAllMetrics();
+        }
+    }
+
     function measurePixelWidth(str) {
         if (!str) return 0;
         lyricMetrics.text = str;
         return lyricMetrics.advanceWidth;
     }
 
-    function ensureLineMetrics(line) {
+    function getRepeatSuffixWidth(suffix) {
+        if (!suffix) return 0;
+        if (root._repeatSuffixCache[suffix] !== undefined) {
+            return root._repeatSuffixCache[suffix];
+        }
+        let w = root.measurePixelWidth(suffix);
+        root._repeatSuffixCache[suffix] = w;
+        return w;
+    }
+
+    function precompileLineMetrics(line) {
         if (!line || line._totalWidth !== undefined) return;
         if (!line.words || line.words.length === 0) {
             line._totalWidth = root.measurePixelWidth(line.text);
@@ -815,9 +857,24 @@ Singleton {
         line._totalWidth = prevW > 0 ? prevW : root.measurePixelWidth(line.text);
     }
 
+    function recompileAllMetrics() {
+        let lines = root.lyricLines;
+        if (!lines || lines.length === 0) return;
+        root.bulletPixelWidth = root.measurePixelWidth(" • ");
+        for (let i = 0; i < lines.length; i++) {
+            lines[i]._totalWidth = undefined;
+            root.precompileLineMetrics(lines[i]);
+        }
+        root.buildGroupIndex();
+    }
+
+    function ensureLineMetrics(line) {
+        if (!line || line._totalWidth !== undefined) return;
+        root.precompileLineMetrics(line);
+    }
+
     function getLineSweepFraction(line, currentSec) {
         if (!line) return 0.0;
-        root.ensureLineMetrics(line);
         let totalW = line._totalWidth || 0;
         if (totalW <= 0) return 0.0;
         if (!line.words || line.words.length === 0) return 1.0;
@@ -856,13 +913,12 @@ Singleton {
             return root.getLineSweepFraction(lObj, currentSec);
         }
 
-        let bulletW = root.measurePixelWidth(" • ");
+        let bulletW = root.bulletPixelWidth > 0 ? root.bulletPixelWidth : root.measurePixelWidth(" • ");
         let totalGroupW = 0;
         let sweptPixels = 0;
 
         for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
             let lObj = lines[m];
-            root.ensureLineMetrics(lObj);
             let lineW = lObj._totalWidth || 0;
 
             if (m > currGroup.startIdx) {
@@ -896,9 +952,16 @@ Singleton {
             root.lyricGroupIndex = [];
             return;
         }
+
+        let bulletW = root.bulletPixelWidth > 0 ? root.bulletPixelWidth : root.measurePixelWidth(" • ");
+        root.bulletPixelWidth = bulletW;
+
         for (let l = 0; l < lines.length; l++) {
-            root.ensureLineMetrics(lines[l]);
+            if (lines[l]._totalWidth === undefined) {
+                root.precompileLineMetrics(lines[l]);
+            }
         }
+
         let maxAllowedPx = Math.max(160, (GlobalStates?.topBarMediaWidth ?? 440) - 135);
         root.lastGroupWidth = maxAllowedPx;
 
@@ -913,39 +976,71 @@ Singleton {
         let i = 0;
         while (i < lines.length) {
             let start = i;
-            let groupText = lines[i].text;
+            let currentLine = lines[i];
+            let groupText = currentLine.text;
+            let currentGroupWidth = currentLine._totalWidth || 0;
             let j = i + 1;
 
-            // Never group instrumental markers or lines belonging to a repeat series
-            if (groupText !== "♪" && !isLineRepeat(i)) {
+            // Never group instrumental markers, repeat sequences, or lines that are already wide (>62% of bar)
+            let isRepeat = isLineRepeat(i);
+            let isInstrumental = groupText === "♪";
+            let isAlreadyLong = currentGroupWidth > maxAllowedPx * 0.62;
+
+            if (!isInstrumental && !isRepeat && !isAlreadyLong) {
                 while (j < lines.length) {
-                    let nextText = lines[j].text;
+                    let nextLine = lines[j];
+                    let nextText = nextLine.text;
 
                     // Stop if next item is an instrumental pause or repeat sequence
                     if (nextText === "♪" || isLineRepeat(j)) break;
 
-                    let gap = lines[j].time - lines[j - 1].time;
-                    let totalSpan = lines[j].time - lines[start].time;
+                    let prevLine = lines[j - 1];
+                    let prevEnd = prevLine.endTime || (prevLine.time + 3.0);
+                    let silenceGap = nextLine.time - prevEnd;
+                    let lineStartInterval = nextLine.time - prevLine.time;
+                    let totalSpan = nextLine.time - lines[start].time;
 
-                    // Cadence / Stanza break check:
-                    // Gaps > 4.8s mark a distinct pause or stanza transition
-                    if (gap > 4.8 || totalSpan > 11.0) break;
+                    // 1. Natural rhythm & vocal rest check:
+                    // If vocal silence between lines > 1.6s, or start-to-start interval > 5.0s,
+                    // or total multi-line group span > 9.5s, keep separate for crisp musical pacing
+                    if (silenceGap > 1.6 || lineStartInterval > 5.0 || totalSpan > 9.5) break;
 
-                    // Allow up to 3 lines (triplets) whenever they fit comfortably in the bar width
-                    let count = (j - start) + 1;
-                    if (count > 3) break;
+                    // 2. Sentence / punctuation boundary check:
+                    // If previous line ends with strong terminal punctuation (. ? ! :),
+                    // only allow stitching if both lines are genuinely brief call-and-response phrases
+                    let prevTrimmed = prevLine.text.trim();
+                    let hasTerminalPunctuation = /[.?!:]$/.test(prevTrimmed) && !/\.\.\.$/.test(prevTrimmed);
+                    let bothBrief = (prevTrimmed.length <= 16) && (nextText.trim().length <= 16);
+                    if (hasTerminalPunctuation && !bothBrief) break;
 
-                    // Dynamic reserve: if candidate line j is followed by an instrumental gap (> 7s or ♪),
-                    // reserve extra width (~65px) for the upcoming (♪ Xs) countdown timer so it never marquees.
-                    let hasTimer = (j + 1 < lines.length) && (lines[j + 1].time - lines[j].time > 7.0 || lines[j + 1].text === "♪");
+                    // 3. Triplet restraint:
+                    // Couplets (2 lines) are the standard sweet spot.
+                    // Allow a 3rd line ONLY if all 3 lines are short compact phrases (e.g. <= 18 chars each)
+                    let currentCount = (j - start) + 1;
+                    if (currentCount > 3) break;
+                    if (currentCount === 3) {
+                        let line1Short = lines[start].text.length <= 18;
+                        let line2Short = lines[start + 1].text.length <= 18;
+                        let line3Short = nextText.length <= 18;
+                        if (!line1Short || !line2Short || !line3Short) break;
+                    }
+
+                    // 4. Countdown timer reserve:
+                    // If candidate line j is followed by an instrumental break (> 4.5s or ♪),
+                    // reserve extra width (~65px) so the upcoming countdown timer never marquees.
+                    let nextAfter = (j + 1 < lines.length) ? lines[j + 1] : null;
+                    let nextAfterGap = nextAfter ? (nextAfter.time - (nextLine.endTime || nextLine.time + 3.0)) : 999;
+                    let hasTimer = (nextAfterGap > 4.5) || (nextAfter && nextAfter.text === "♪");
                     let reserve = hasTimer ? 65 : 20;
 
-                    // Width check with actual font rendering
-                    let candidateText = groupText + " • " + nextText;
-                    let candidatePx = root.measurePixelWidth(candidateText);
-                    if (candidatePx > maxAllowedPx - reserve) break;
+                    // 5. Pixel width check using precompiled line lengths (O(1) arithmetic, no DOM/font measurement)
+                    let candidateWidth = currentGroupWidth + bulletW + (nextLine._totalWidth || 0);
+                    let maxTargetWidth = (currentCount === 3) ? (maxAllowedPx * 0.85) : maxAllowedPx;
+                    if (candidateWidth > maxTargetWidth - reserve) break;
 
-                    groupText = candidateText;
+                    // Merge line into multiline group
+                    groupText = groupText + " • " + nextText;
+                    currentGroupWidth = candidateWidth;
                     j++;
                 }
             }
@@ -976,7 +1071,7 @@ Singleton {
     }
 
     Timer {
-        interval: root.hasWordSync ? 16 : 200
+        interval: root.hasWordSync ? 16 : 33
         repeat: true
         running: activePlayer?.playbackState === MprisPlaybackState.Playing && root.lyricLines.length > 0
         onTriggered: {
@@ -1095,13 +1190,12 @@ Singleton {
                 let curLineWidth = 0;
 
                 if (!isSingleLine) {
-                    let bulletW = root.measurePixelWidth(" • ");
+                    let bulletW = root.bulletPixelWidth > 0 ? root.bulletPixelWidth : root.measurePixelWidth(" • ");
                     let partsDim = [];
                     let partsLit = [];
                     let partsRich = [];
                     for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
                         let lObj = lines[m];
-                        root.ensureLineMetrics(lObj);
                         let w = lObj._totalWidth || 0;
 
                         if (m > currGroup.startIdx) totalLyricW += bulletW;
@@ -1131,7 +1225,6 @@ Singleton {
                     }
                 } else {
                     let lObj = lines[currGroup.startIdx];
-                    root.ensureLineMetrics(lObj);
                     totalLyricW = lObj ? (lObj._totalWidth || 0) : 0;
                     curLineStartX = 0;
                     curLineWidth = totalLyricW;
@@ -1154,7 +1247,7 @@ Singleton {
                 if (root.hasWordSync) {
                     let lyricFrac = root.calculateGroupSweep(currGroup, currIdx, wordSyncPos);
                     if (repeatSuffix.length > 0 && totalLyricW > 0) {
-                        let suffixW = root.measurePixelWidth(repeatSuffix);
+                        let suffixW = root.getRepeatSuffixWidth(repeatSuffix);
                         let totalLineW = totalLyricW + suffixW;
                         newProgress = lyricFrac * (totalLyricW / totalLineW);
                     } else {
@@ -1353,7 +1446,7 @@ Singleton {
             if (root.currentLyricLineRich !== newCurrentLineRich) root.currentLyricLineRich = newCurrentLineRich;
             let wasMulti = root.isMultiLineGroup;
             let isMulti = newIsMultiLineGroup;
-            let shouldSlide = (currIdx >= 0) && (wasMulti || isMulti);
+            let shouldSlide = (currIdx >= 0) && wasMulti;
             if (root.allowHighlightSlide !== shouldSlide) root.allowHighlightSlide = shouldSlide;
             if (root.currentGroupStartIdx !== newGroupStartIdx) root.currentGroupStartIdx = newGroupStartIdx;
             if (root.isMultiLineGroup !== newIsMultiLineGroup) root.isMultiLineGroup = newIsMultiLineGroup;
@@ -1367,6 +1460,7 @@ Singleton {
     }
 
     Component.onCompleted: {
+        root.bulletPixelWidth = root.measurePixelWidth(" • ");
         root.syncTrackChange();
     }
 }

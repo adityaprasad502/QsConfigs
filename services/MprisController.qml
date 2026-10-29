@@ -22,6 +22,8 @@ Singleton {
 	property MprisPlayer activePlayer: trackedPlayer ?? root.players[0] ?? null;
 	signal trackChanged(reverse: bool);
 
+	onPlayersChanged: Qt.callLater(root.updateBestPlayer);
+
 	property bool __reverse: false;
 
 	property var activeTrack;
@@ -59,7 +61,51 @@ Singleton {
         return true;
     }
 
-	// Original stuff from fox below
+	function getPlayerScore(p) {
+		if (!p) return -9999;
+		let score = 0;
+		let isPlaying = p.isPlaying || p.playbackState === MprisPlaybackState.Playing;
+		if (isPlaying) score += 100;
+		let len = p.length || 0;
+		let pos = p.position || 0;
+		// If track has clearly finished playing, heavily penalize it so active tracks win
+		if (len > 0 && pos >= (len - 0.5)) {
+			score -= 150;
+		} else if (isPlaying && pos > 0) {
+			score += 20; // actively progressing
+		}
+		let dbus = (p.dbusName || "").toLowerCase();
+		// Prefer local native players over remote proxies like kdeconnect
+		if (!dbus.includes("kdeconnect")) {
+			score += 40;
+		}
+		if (p.trackArtUrl && p.trackArtUrl.length > 0) score += 10;
+		if (p.trackTitle && p.trackTitle.trim().length > 0) score += 10;
+		if (p.trackArtist && p.trackArtist.trim().length > 0) score += 5;
+		return score;
+	}
+
+	function getBestPlayer() {
+		let best = null;
+		let bestScore = -99999;
+		for (const player of root.players) {
+			let score = root.getPlayerScore(player);
+			if (score > bestScore) {
+				bestScore = score;
+				best = player;
+			}
+		}
+		return best;
+	}
+
+	function updateBestPlayer() {
+		let best = root.getBestPlayer();
+		if (best && best !== root.trackedPlayer) {
+			root.trackedPlayer = best;
+		}
+	}
+
+	// Player tracking
 	Instantiator {
 		model: root.players;
 
@@ -68,34 +114,47 @@ Singleton {
 			target: modelData;
 
 			Component.onCompleted: {
-				if (root.trackedPlayer == null || modelData.isPlaying) {
-					root.trackedPlayer = modelData;
-				}
+				Qt.callLater(root.updateBestPlayer);
 			}
 
 			Component.onDestruction: {
-				if (root.trackedPlayer == null || !root.trackedPlayer.isPlaying) {
-					for (const player of root.players) {
-						if (player.isPlaying) {
-							root.trackedPlayer = player;
-							break;
-						}
-					}
-
-					if (trackedPlayer == null && root.players.length != 0) {
-						trackedPlayer = root.players[0];
-					}
+				if (root.trackedPlayer === modelData) {
+					root.trackedPlayer = null;
 				}
+				Qt.callLater(root.updateBestPlayer);
 			}
 
 			function onPlaybackStateChanged() {
 				if (modelData.isPlaying) {
-					root.trackedPlayer = modelData;
+					if (!root.trackedPlayer || !root.trackedPlayer.isPlaying || root.getPlayerScore(modelData) >= root.getPlayerScore(root.trackedPlayer)) {
+						root.trackedPlayer = modelData;
+					}
 				} else if (root.trackedPlayer === modelData) {
-					for (const player of root.players) {
-						if (player.isPlaying) {
-							root.trackedPlayer = player;
-							break;
+					root.updateBestPlayer();
+				}
+			}
+
+			function onPostTrackChanged() {
+				if (modelData.isPlaying) {
+					root.trackedPlayer = modelData;
+				}
+			}
+
+			function onTrackTitleChanged() {
+				if (modelData.isPlaying) {
+					root.trackedPlayer = modelData;
+				}
+			}
+
+			function onPositionChanged() {
+				// If current tracked player has finished its track, check if another active player should take over
+				if (root.trackedPlayer === modelData) {
+					let len = modelData.length || 0;
+					let pos = modelData.position || 0;
+					if (len > 0 && pos >= (len - 0.5)) {
+						let best = root.getBestPlayer();
+						if (best && best !== modelData && (best.isPlaying || best.playbackState === MprisPlaybackState.Playing)) {
+							root.trackedPlayer = best;
 						}
 					}
 				}
@@ -110,6 +169,10 @@ Singleton {
 			root.updateTrack();
 		}
 
+		function onTrackTitleChanged() {
+			root.updateTrack();
+		}
+
 		function onTrackArtistChanged() {
 			root.updateTrack();
 		}
@@ -121,13 +184,12 @@ Singleton {
 		function onTrackArtUrlChanged() {
 			// console.log("arturl:", activePlayer.trackArtUrl)
 			// root.updateTrack();
-			if (root.activePlayer.uniqueId == root.activeTrack.uniqueId && root.activePlayer.trackArtUrl != root.activeTrack.artUrl) {
+			if (root.activePlayer && root.activeTrack && root.activePlayer.uniqueId == root.activeTrack.uniqueId && root.activePlayer.trackArtUrl != root.activeTrack.artUrl) {
 				// cantata likes to send cover updates *BEFORE* updating the track info.
 				// as such, art url changes shouldn't be able to break the reverse animation
 				const r = root.__reverse;
 				root.updateTrack();
 				root.__reverse = r;
-
 			}
 		}
 	}

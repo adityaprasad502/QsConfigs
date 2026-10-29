@@ -296,7 +296,7 @@ Item {
                         Behavior on x {
                             enabled: LyricsService.allowHighlightSlide
                             NumberAnimation {
-                                duration: 320
+                                duration: 240
                                 easing.type: Easing.OutCubic
                             }
                         }
@@ -304,7 +304,7 @@ Item {
                         Behavior on width {
                             enabled: LyricsService.allowHighlightSlide
                             NumberAnimation {
-                                duration: 320
+                                duration: 240
                                 easing.type: Easing.OutCubic
                             }
                         }

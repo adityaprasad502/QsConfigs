@@ -82,9 +82,11 @@ Scope {
         }
 
         filtered.sort((a, b) => {
-            let aPlaying = a.isPlaying || a.playbackState === MprisPlaybackState.Playing;
-            let bPlaying = b.isPlaying || b.playbackState === MprisPlaybackState.Playing;
-            if (aPlaying !== bPlaying) return aPlaying ? -1 : 1;
+            if (a === root.activePlayer) return -1;
+            if (b === root.activePlayer) return 1;
+            let scoreA = MprisController.getPlayerScore(a);
+            let scoreB = MprisController.getPlayerScore(b);
+            if (scoreA !== scoreB) return scoreB - scoreA;
             return 0;
         });
 
