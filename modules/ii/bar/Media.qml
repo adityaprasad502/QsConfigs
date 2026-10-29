@@ -283,6 +283,41 @@ Item {
                             text: LyricsService.currentLyricLineLit
                         }
                     }
+
+                    Item {
+                        id: multilineSlideOverlay
+                        visible: root.hasLyrics && !LyricsService.hasWordSync && LyricsService.currentLineProgress > 0
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        x: Math.round(parent.implicitWidth * LyricsService.activeLineStartFraction)
+                        width: Math.round(parent.implicitWidth * (LyricsService.activeLineEndFraction - LyricsService.activeLineStartFraction))
+                        clip: true
+
+                        Behavior on x {
+                            enabled: LyricsService.allowHighlightSlide
+                            NumberAnimation {
+                                duration: 320
+                                easing.type: Easing.OutCubic
+                            }
+                        }
+
+                        Behavior on width {
+                            enabled: LyricsService.allowHighlightSlide
+                            NumberAnimation {
+                                duration: 320
+                                easing.type: Easing.OutCubic
+                            }
+                        }
+
+                        StyledText {
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            x: -multilineSlideOverlay.x
+                            width: topBarMusicText.implicitWidth
+                            textFormat: Text.StyledText
+                            text: LyricsService.currentLyricLineLit
+                        }
+                    }
                 }
 
                 StyledText {
@@ -305,6 +340,25 @@ Item {
                             anchors.left: parent.left
                             anchors.top: parent.top
                             anchors.bottom: parent.bottom
+                            width: topBarMusicTextDup.implicitWidth
+                            textFormat: Text.StyledText
+                            text: LyricsService.currentLyricLineLit
+                        }
+                    }
+
+                    Item {
+                        id: multilineSlideOverlayDup
+                        visible: multilineSlideOverlay.visible
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        x: multilineSlideOverlay.x
+                        width: multilineSlideOverlay.width
+                        clip: true
+
+                        StyledText {
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            x: -multilineSlideOverlayDup.x
                             width: topBarMusicTextDup.implicitWidth
                             textFormat: Text.StyledText
                             text: LyricsService.currentLyricLineLit

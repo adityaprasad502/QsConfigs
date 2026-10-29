@@ -24,6 +24,10 @@ Singleton {
     property string currentLyricLineLit: ""
     property real currentLineProgress: 0.0
     property int currentGroupStartIdx: -1
+    property bool isMultiLineGroup: false
+    property bool allowHighlightSlide: false
+    property real activeLineStartFraction: 0.0
+    property real activeLineEndFraction: 1.0
     property string nextLyricLine: ""
     property var lyricLines: [] // Array of { time: seconds, text: string }
     property var lyricGroupIndex: [] // Precomputed group for each line index
@@ -299,6 +303,10 @@ Singleton {
             root.currentLyricLineLit = "";
             root.currentLineProgress = 0.0;
             root.currentGroupStartIdx = -1;
+            root.isMultiLineGroup = false;
+            root.allowHighlightSlide = false;
+            root.activeLineStartFraction = 0.0;
+            root.activeLineEndFraction = 1.0;
             root.nextLyricLine = "";
             root.loading = false;
             root.loadingStatus = "";
@@ -314,6 +322,10 @@ Singleton {
         root.currentLyricLineLit = "";
         root.currentLineProgress = 0.0;
         root.currentGroupStartIdx = -1;
+        root.isMultiLineGroup = false;
+        root.allowHighlightSlide = false;
+        root.activeLineStartFraction = 0.0;
+        root.activeLineEndFraction = 1.0;
         root.nextLyricLine = "";
         root.hasUnsyncedLyrics = false;
         root.hasWordSync = false;
@@ -623,7 +635,10 @@ Singleton {
         for (let i = 0; i < parsed.length; i++) {
             let p = parsed[i];
             if (!p.endTime || p.endTime <= p.time) {
-                p.endTime = (i + 1 < parsed.length) ? parsed[i + 1].time : (p.time + 4.5);
+                let nextT = (i + 1 < parsed.length) ? parsed[i + 1].time : (p.time + 4.5);
+                let rawGap = nextT - p.time;
+                let dur = p.isWordSynced ? 4.5 : Math.min(rawGap, Math.max(2.5, Math.min(5.0, (p.text ? p.text.length : 10) * 0.28 + 1.2)));
+                p.endTime = p.time + dur;
             }
             if (p.isWordSynced && p.words && p.words.length > 0) {
                 let lastW = p.words[p.words.length - 1];
@@ -731,6 +746,10 @@ Singleton {
                 root.currentLyricLineLit = "";
                 root.currentLineProgress = 0.0;
                 root.currentGroupStartIdx = -1;
+                root.isMultiLineGroup = false;
+                root.allowHighlightSlide = false;
+                root.activeLineStartFraction = 0.0;
+                root.activeLineEndFraction = 1.0;
                 root.nextLyricLine = "";
             }
         }
@@ -1017,6 +1036,9 @@ Singleton {
             let newCurrentLineLit = "";
             let newNextLine = "";
             let newGroupStartIdx = -1;
+            let newIsMultiLineGroup = false;
+            let newStartFrac = 0.0;
+            let newEndFrac = 1.0;
             let newProgress = 0.0;
 
             if (currIdx >= 0) {
@@ -1049,7 +1071,8 @@ Singleton {
                 }
 
                 // If this is part of a repeated sequence, bind group key to series origin
-                newGroupStartIdx = repeatSeriesStart;
+                newGroupStartIdx = isSingleLine ? repeatSeriesStart : currGroup.startIdx;
+                newIsMultiLineGroup = !isSingleLine;
 
                 // Detect if this is the last repeat in a series → show (x1)
                 // Only applies to single-line groups — joined groups are never a repeat tail
@@ -1067,20 +1090,33 @@ Singleton {
                 let baseTextLit = "";
                 let baseTextRich = "";
 
-                if (currGroup.startIdx < currGroup.endIdx) {
+                let totalLyricW = 0;
+                let curLineStartX = 0;
+                let curLineWidth = 0;
+
+                if (!isSingleLine) {
+                    let bulletW = root.measurePixelWidth(" • ");
                     let partsDim = [];
                     let partsLit = [];
                     let partsRich = [];
                     for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
                         let lObj = lines[m];
+                        root.ensureLineMetrics(lObj);
+                        let w = lObj._totalWidth || 0;
+
+                        if (m > currGroup.startIdx) totalLyricW += bulletW;
+                        if (m === currIdx) {
+                            curLineStartX = totalLyricW;
+                            curLineWidth = w;
+                        }
+                        totalLyricW += w;
+
                         partsDim.push(root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex));
                         partsLit.push(root.formatLineRich(lObj.text, root.colLitHex, root.colBgLitHex));
                         if (lineSyncPos < lines[m].time) {
                             partsRich.push(root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex));
                         } else if (m < currIdx) {
                             partsRich.push(root.formatLineRich(lObj.text, root.colPastHex, root.colBgPastHex));
-                        } else if (m === currIdx) {
-                            partsRich.push(root.formatLineRich(lObj.text, root.colLitHex, root.colBgLitHex));
                         } else {
                             partsRich.push(root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex));
                         }
@@ -1088,24 +1124,24 @@ Singleton {
                     baseTextDim = partsDim.join(`<font color="${root.colBulletHex}"> • </font>`);
                     baseTextLit = partsLit.join(`<font color="${root.colBulletHex}"> • </font>`);
                     baseTextRich = partsRich.join(`<font color="${root.colBulletHex}"> • </font>`);
-                } else {
-                    baseTextDim = root.formatLineRich(baseText, root.colUpcomingHex, root.colBgUpcomingHex);
-                    baseTextLit = root.formatLineRich(baseText, root.colLitHex, root.colBgLitHex);
-                    baseTextRich = (lineSyncPos < lines[currGroup.startIdx].time) ? baseTextDim : baseTextLit;
-                }
 
-                let totalLyricW = 0;
-                if (currGroup.startIdx < currGroup.endIdx) {
-                    let bulletW = root.measurePixelWidth(" • ");
-                    for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
-                        root.ensureLineMetrics(lines[m]);
-                        if (m > currGroup.startIdx) totalLyricW += bulletW;
-                        totalLyricW += (lines[m]._totalWidth || 0);
+                    if (totalLyricW > 0 && lineSyncPos >= lines[currGroup.startIdx].time) {
+                        newStartFrac = Math.max(0.0, Math.min(1.0, curLineStartX / totalLyricW));
+                        newEndFrac = Math.max(0.0, Math.min(1.0, (curLineStartX + curLineWidth) / totalLyricW));
                     }
                 } else {
                     let lObj = lines[currGroup.startIdx];
                     root.ensureLineMetrics(lObj);
                     totalLyricW = lObj ? (lObj._totalWidth || 0) : 0;
+                    curLineStartX = 0;
+                    curLineWidth = totalLyricW;
+
+                    baseTextDim = root.formatLineRich(baseText, root.colUpcomingHex, root.colBgUpcomingHex);
+                    baseTextLit = root.formatLineRich(baseText, root.colLitHex, root.colBgLitHex);
+                    baseTextRich = root.isMultiLineGroup ? baseTextDim : baseTextLit;
+
+                    newStartFrac = 0.0;
+                    newEndFrac = 1.0;
                 }
 
                 if (repeatSuffix.length > 0) {
@@ -1187,15 +1223,15 @@ Singleton {
                             ? root.colWaitingGroupHex
                             : root.colWaitingSingleHex;
 
-                        // Only show countdown timer if the current line has ACTUALLY finished vocalizing
-                        // AND there is a substantial instrumental gap (> 5s) AND 2.5s have passed since singing finished!
-                        if (remaining > 0 && isGroupFinished && gap > 5.0 && timeSinceEnd > 2.5) {
+                        // Show countdown timer if the current line has finished vocalizing
+                        // AND there is an instrumental gap (> 4s) AND 1.5s have passed since singing finished!
+                        if (remaining > 0 && isGroupFinished && gap > 4.0 && timeSinceEnd > 1.5) {
                             newCurrentLine = `${baseText} (♪ ${remaining}s)`;
                             newCurrentLineRich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font> <font color="${root.colTimerHex}">(♪ ${remaining}s)</font>`;
                             newCurrentLineDim = newCurrentLineRich;
                             newCurrentLineLit = newCurrentLineRich;
                             newProgress = 0.0;
-                        } else if (remaining === 0 && isGroupFinished && gap > 5.0 && timeSinceEnd > 2.5) {
+                        } else if (remaining === 0 && isGroupFinished && gap > 4.0 && timeSinceEnd > 1.5) {
                             newCurrentLine = baseText;
                             newCurrentLineRich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font>`;
                             newCurrentLineDim = newCurrentLineRich;
@@ -1315,7 +1351,14 @@ Singleton {
             if (root.currentLyricLineDim !== newCurrentLineDim) root.currentLyricLineDim = newCurrentLineDim;
             if (root.currentLyricLineLit !== newCurrentLineLit) root.currentLyricLineLit = newCurrentLineLit;
             if (root.currentLyricLineRich !== newCurrentLineRich) root.currentLyricLineRich = newCurrentLineRich;
+            let wasMulti = root.isMultiLineGroup;
+            let isMulti = newIsMultiLineGroup;
+            let shouldSlide = (currIdx >= 0) && (wasMulti || isMulti);
+            if (root.allowHighlightSlide !== shouldSlide) root.allowHighlightSlide = shouldSlide;
             if (root.currentGroupStartIdx !== newGroupStartIdx) root.currentGroupStartIdx = newGroupStartIdx;
+            if (root.isMultiLineGroup !== newIsMultiLineGroup) root.isMultiLineGroup = newIsMultiLineGroup;
+            if (Math.abs(root.activeLineStartFraction - newStartFrac) > 0.0005) root.activeLineStartFraction = newStartFrac;
+            if (Math.abs(root.activeLineEndFraction - newEndFrac) > 0.0005) root.activeLineEndFraction = newEndFrac;
             if (root.nextLyricLine !== newNextLine) root.nextLyricLine = newNextLine;
             if (Math.abs(root.currentLineProgress - newProgress) > 0.0005) {
                 root.currentLineProgress = newProgress;

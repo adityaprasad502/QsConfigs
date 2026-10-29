@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import sys
+import os
+import threading
+import queue
 import json
 import base64
 import zlib
@@ -713,24 +716,26 @@ def fetch_p3(title, artist="", target_duration=0):
 # ==============================================================================
 # Main Dispatcher: P1 -> P2 -> P3
 # ==============================================================================
+_CREDIT_RE = re.compile(
+    r"^(lyrics?( by)?|lyricist|composed?( by)?|composer|written( by)?|writer|"
+    r"produced?( by)?|producer|arranged?( by)?|arranger|music( by)?|vocals?( by)?|"
+    r"track\s*[:：\-]|artist\s*[:：\-]|album\s*[:：\-]|synced by|lrc by|source\s*[:：]|"
+    r"mixing( by)?|mixed by|mastering( by)?|mastered by|recorded?( by)?|recording( by)?|"
+    r"engineered by|publisher|label|qqmusic|kugou|netease|163\.com|lrclib|"
+    r"作\s*词|作\s*曲|编\s*曲|制\s*作|监\s*制|录\s*音|混\s*音|母\s*带|演唱|词曲|词\s*[:：]|曲\s*[:：]|"
+    r"统筹|企划|出品|发行|后期|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|原唱|翻唱|伴奏|配唱|乐器|"
+    r"专\s*辑|歌\s*手|歌\s*名|曲\s*名)",
+    re.I
+)
+
+
 def is_metadata_line(text, time_ms, title="", artist="", has_syllables=False):
     t = text.strip()
     if not t or t == "♪":
         return True
-    credit_re = re.compile(
-        r"^(lyrics?( by)?|lyricist|composed?( by)?|composer|written( by)?|writer|"
-        r"produced?( by)?|producer|arranged?( by)?|arranger|music( by)?|vocals?( by)?|"
-        r"track\s*[:：\-]|artist\s*[:：\-]|album\s*[:：\-]|synced by|lrc by|source\s*[:：]|"
-        r"mixing( by)?|mixed by|mastering( by)?|mastered by|recorded?( by)?|recording( by)?|"
-        r"engineered by|publisher|label|qqmusic|kugou|netease|163\.com|lrclib|"
-        r"作\s*词|作\s*曲|编\s*曲|制\s*作|监\s*制|录\s*音|混\s*音|母\s*带|演唱|词曲|词\s*[:：]|曲\s*[:：]|"
-        r"统筹|企划|出品|发行|后期|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|原唱|翻唱|伴奏|配唱|乐器|"
-        r"专\s*辑|歌\s*手|歌\s*名|曲\s*名)",
-        re.I
-    )
-    if credit_re.search(t):
+    if _CREDIT_RE.search(t):
         return True
-    if time_ms < 15000:
+    if not has_syllables and time_ms < 15000:
         nt = norm(t)
         ntitle = norm(title)
         nartist = norm(artist)
@@ -748,6 +753,13 @@ def is_metadata_line(text, time_ms, title="", artist="", has_syllables=False):
             if p0 in ("title", "track", "artist", "singer", "album", "song"):
                 return True
     return False
+
+_CREDIT_COLON_RE = re.compile(
+    r"^(lyrics?( by)?|composed?( by)?|written( by)?|produced?( by)?|arranged?( by)?|"
+    r"作\s*词|作\s*曲|编\s*曲|制\s*作|演唱|词曲)\s*[:：]",
+    re.I
+)
+
 
 def clean_syllables(lyrics, title="", artist=""):
     if not lyrics:
@@ -778,12 +790,7 @@ def clean_syllables(lyrics, title="", artist=""):
         if is_metadata_line(plain_text, time_ms, title, artist, has_syllables=has_syl):
             if not seen_first_lyric:
                 continue
-            credit_re = re.compile(
-                r"^(lyrics?( by)?|composed?( by)?|written( by)?|produced?( by)?|arranged?( by)?|"
-                r"作\s*词|作\s*曲|编\s*曲|制\s*作|演唱|词曲)\s*[:：]",
-                re.I
-            )
-            if credit_re.search(plain_text):
+            if _CREDIT_COLON_RE.search(plain_text):
                 continue
 
         seen_first_lyric = True
@@ -799,29 +806,44 @@ def report_status(msg):
         pass
 
 def fetch_syllables(title, artist="", target_duration=0):
-    # 1. Primary provider (P1)
-    report_status("Searching (src1)…")
-    res1 = fetch_p1(title, artist, target_duration)
-    if res1 and ("<" in res1 and ">" in res1):
-        return clean_syllables(res1, title, artist)
+    q = queue.Queue()
+    providers = [
+        ("src1", fetch_p1),
+        ("src2", fetch_p2),
+        ("src3", fetch_p3),
+    ]
 
-    # 2. Secondary fallback (P2)
-    report_status("Searching (src2)…")
-    res2 = fetch_p2(title, artist, target_duration)
-    if res2 and ("<" in res2 and ">" in res2):
-        return clean_syllables(res2, title, artist)
+    def worker(src, fn):
+        try:
+            r = fn(title, artist, target_duration)
+            if r and ("<" in r and ">" in r):
+                q.put((src, r))
+                return
+        except Exception:
+            pass
+        q.put((src, None))
 
-    # 3. Tertiary fallback (P3)
-    report_status("Searching (src3)…")
-    res3 = fetch_p3(title, artist, target_duration)
-    if res3 and ("<" in res3 and ">" in res3):
-        return clean_syllables(res3, title, artist)
+    report_status("Searching…")
+    for src, fn in providers:
+        threading.Thread(target=worker, args=(src, fn), daemon=True).start()
+
+    active = len(providers)
+    while active > 0:
+        try:
+            src, raw = q.get(timeout=4.5)
+            active -= 1
+            if raw:
+                cleaned = clean_syllables(raw, title, artist)
+                if cleaned and ("<" in cleaned and ">" in cleaned):
+                    return cleaned
+        except queue.Empty:
+            break
 
     return None
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        sys.exit(1)
+        os._exit(1)
 
     title = sys.argv[1]
     artist = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -830,6 +852,7 @@ if __name__ == "__main__":
     res = fetch_syllables(title, artist, target_duration)
     if res and ("<" in res and ">" in res):
         sys.stdout.write(res)
-        sys.exit(0)
+        sys.stdout.flush()
+        os._exit(0)
     else:
-        sys.exit(1)
+        os._exit(1)

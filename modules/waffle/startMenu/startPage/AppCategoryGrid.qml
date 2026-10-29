@@ -328,14 +328,14 @@ Rectangle {
     }
 
     component SmallGridButton: WButton {
-        id: root
+        id: smallGridButton
         implicitWidth: 68
         implicitHeight: 68
 
         property real pressedScale: 5 / 6
 
         onDownChanged: {
-            contentItem.scale = root.down ? root.pressedScale : 1; // If/When we do dragging, the scale is 1.25
+            contentItem.scale = smallGridButton.down ? smallGridButton.pressedScale : 1; // If/When we do dragging, the scale is 1.25
         }
     }
 }
