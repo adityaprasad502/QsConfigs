@@ -51,7 +51,7 @@ Singleton {
     property real syncLeadSeconds: 0.16 // Lead time in seconds (switches to next line slightly earlier)
 
     readonly property real firstLineLead: 1.0
-    readonly property real negativeCacheSeconds: 600
+    readonly property real negativeCacheSeconds: 5400
     readonly property int maxCacheEntries: 40
 
     // Display modes (see tick())
@@ -322,6 +322,7 @@ Singleton {
         let cached = root.lyricCache[cacheKey];
         if (cached) {
             if (!cached.none) {
+                console.warn("[Lyrics] session cache hit:", `"${cleanTrack}" - "${cleanArtist}"`);
                 root.loading = false;
                 root.loadingStatus = "";
                 root.parseLyricsResponse(cached);
