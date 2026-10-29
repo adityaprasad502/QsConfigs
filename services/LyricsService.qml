@@ -41,7 +41,6 @@ Singleton {
     property string nextLyricLine: ""
     property var lyricLines: [] // Array of { time: seconds, text: string, ... }
     property var lyricGroupIndex: [] // Precomputed group for each line index
-    property int lastGroupWidth: 0
     property bool hasUnsyncedLyrics: false
     property bool hasWordSync: false
 
@@ -100,36 +99,14 @@ Singleton {
         Qt.callLater(root.tick);
     }
 
-    // Relative time each kind of character takes to sing within its word (tune to taste).
-    // Singers hold vowels; consonants are quick; punctuation/spaces are nearly instant.
-    // Non-Latin characters (CJK, kana, Hangul, ...) count as consonants, i.e. equal weight each.
-    readonly property real charWeightVowel: 2.4
-    readonly property real charWeightSemivowel: 1.5 // y, w
-    readonly property real charWeightConsonant: 1.0
-    readonly property real charWeightPunct: 0.12
-    readonly property real charWeightSpace: 0.08
     // How much of a gentle S-curve is blended over the whole word (0 = none, 1 = full smoothstep)
     readonly property real wordEaseMix: 0.3
-    property var _weightCache: ({})
 
     function vocalEase(t, dur) {
         if (t <= 0) return 0;
         if (t >= 1) return 1;
         if (dur < 0.15) return t;
         return t + (t * t * (3.0 - 2.0 * t) - t) * root.wordEaseMix;
-    }
-
-    function _charWeight(ch) {
-        let cached = root._weightCache[ch];
-        if (cached !== undefined) return cached;
-        let w;
-        if (/\s/.test(ch)) w = root.charWeightSpace;
-        else if (root._reSymbolOnly.test(ch)) w = root.charWeightPunct;
-        else if (/[aeiouàáâãäåæèéêëìíîïòóôõöøùúûüœ]/i.test(ch)) w = root.charWeightVowel;
-        else if (/[yw]/i.test(ch)) w = root.charWeightSemivowel;
-        else w = root.charWeightConsonant;
-        root._weightCache[ch] = w;
-        return w;
     }
 
     function escapeXml(s) {
@@ -197,9 +174,9 @@ Singleton {
         }
         return s;
     }
-    readonly property var _reLegal: new RegExp("[©℗]|\\ball rights reserved\\b|\\bisrc\\b|^\\s*copyright\\b|https?:\\/\\/|\\bwww\\.|" + root._d("71716d757369637c6b75676f757c6e6574656173657c3136335c2e636f6d7c6c72636c6962"), "i")
+    readonly property var _reLegal: new RegExp("[©℗]|\\ball rights reserved\\b|\\bisrc\\b|^\\s*copyright\\b|https?:\\/\\/|\\bwww\\.|版权所有|未经(?:著作权人)?许可|享有本翻译作品|网易云音乐|酷狗音乐|QQ音乐|" + root._d("71716d757369637c6b75676f757c6e6574656173657c3136335c2e636f6d7c6c72636c6962"), "i")
     readonly property var _reCjkStrong: /^\s*(?:作\s*[词詞曲]|[编編]\s*曲|词\s*曲|詞\s*曲|[监監]\s*[制製]|[制製]\s*作\s*人|母\s*[带帶]|混\s*音|[录錄]\s*音|原\s*唱|配\s*唱|[统統]\s*[筹籌]|企\s*[划劃]|版\s*[权權]|出\s*品|[发發]\s*行|音\s*乐\s*[总總]\s*[监監])/
-    readonly property var _reCjkColon: /^\s*(?:词|曲|詞|编|編|制作|製作|演唱|歌手|歌名|曲名|[专專]\s*辑|和声|合音|吉他|贝斯|鼓|键盘|弦乐|文案|乐器|后期|策划|演奏|录制|歌曲|词作|曲作|原曲|翻译|译者|字幕|歌词|歌詞|演奏|プロデュース|ミックス|マスタリング|レコーディング|ボーカル|コーラス|歌|작사|작곡|편곡|노래|프로듀서|믹싱|마스터링|녹음)\s*[:：]/
+    readonly property var _reCjkColon: /^\s*(?:(?:作\s*[词詞曲]|[编編]\s*曲|词\s*曲|詞\s*曲|[监監]\s*[制製]|[制製]\s*作(?:人|助理|统筹)?|母\s*[带帶](?:工程?师|处理)?|混\s*音(?:工程?师|师|助理)?|[录錄]\s*音(?:工程?师|师|助理|室|棚)?|原\s*唱|配\s*唱|[统統]\s*[筹籌]|企\s*[划劃]|版\s*[权權]|出\s*品(?:人)?|[发發]\s*行(?:人)?|音\s*乐\s*[总總]\s*[监監]|音\s*频(?:工程?师|师|助理|制作)?|人\s*声(?:编辑|编写|录音)?|附加制作|弦\s*乐(?:编写|监制)?|[鼓键琴笛弦管铜木]\s*编[曲程]|弦乐|管乐|铜管|木管|打击乐|和声(?:编写)?|合音|文案|乐器|后期|策划|演奏|录制|原曲|翻译|译者|字幕|歌词|歌詞|演唱|歌手|歌名|曲名|[专專]\s*辑|(?:原声|木|电)?\s*吉他|(?:低音|电)?\s*贝[斯司]|(?:架子|低音)?\s*鼓|键盘|钢\s*琴|(?:[小中大小]|爱尔兰)?\s*提琴|(?:哈蒙德)?\s*(?:手|管|簧)?\s*风琴|(?:爱尔兰)?\s*(?:长|短|哨)?\s*笛|萨克斯|小号|圆号|长号|单簧管|双簧管|大管|古筝|琵琶|二胡|プロデュース|ミックス|マスタリング|レコーディング|ボーカル|コーラス|歌|작사|작곡|편곡|노래|프로듀서|믹싱|마스터링|녹음))\s*[:：]/
     // Only trusted before the first sung line
     readonly property var _reSoftEn: /^\s*(?:(?:executive |vocal |co-?)?producers?|composers?|lyricists?|arrangers?|songwriters?|publisher|written by)\b/i
     readonly property var _reCjkSoft: /^\s*(?:演唱|歌手|歌名|曲名|[专專]\s*辑|和声|合音|吉他|贝斯|键盘|弦乐|乐器|后期|制作|策划|编写|歌词|文案)/
@@ -239,10 +216,6 @@ Singleton {
         return (c > 0 && l > 0) ? "mixed" : "";
     }
 
-    function _firstSegment(artist) {
-        return (artist || "").split(/[,;&\/、]+/)[0].trim();
-    }
-
     // ------------------------------------------------------------------------------------------
     // Cache (insertion-ordered eviction; negative results expire). The python helper additionally
     // keeps a persistent on-disk cache, so this one only avoids respawning it within a session.
@@ -275,6 +248,11 @@ Singleton {
             property int jobId: 0
             stdout: SplitParser {
                 onRead: data => root._onFetchLine(proc.jobId, data)
+            }
+            stderr: SplitParser {
+                onRead: data => {
+                    if (data && data.trim()) console.warn("[Lyrics] fetch:", data);
+                }
             }
             onExited: (exitCode, exitStatus) => {
                 let id = proc.jobId;
@@ -709,11 +687,23 @@ Singleton {
             || root._reCjkColon.test(t) || root._reLegal.test(t);
     }
 
+    function _isPerformerTag(t, ctx) {
+        if (!ctx.hasMeta) return false;
+        let m = t.match(/^\s*[\[\(（【]?\s*([A-Za-z0-9\s._'-]+?)\s*[\]\)）】]?\s*[:：]\s*$/);
+        if (!m) return false;
+        let v = root._normVariants(m[1].trim());
+        for (let i = 0; i < v.length; i++) {
+            if (ctx.meta[v[i]]) return true;
+        }
+        return false;
+    }
+
     // Credit-ish line that must not count as lyric content
     function _isNoise(e, ctx) {
         let t = e.text;
         return root._isHardCredit(t) || root._reSoftEn.test(t) || root._reCjkSoft.test(t)
-            || (e.time < 15 && root._isMetaEcho(t, ctx));
+            || (e.time < 15 && root._isMetaEcho(t, ctx))
+            || root._isPerformerTag(t, ctx);
     }
 
     // Title / artist / album echoes in the intro ("Song - Artist", "Artist (艾德·希兰)", ...)
@@ -724,16 +714,32 @@ Singleton {
             if (ctx.meta[whole[i]]) return true;
         }
         let parts = t.split(/\s+[-–—]\s+|\s*[\/|｜:：]\s*/);
-        if (parts.length < 2) return false;
-        for (let p = 0; p < parts.length; p++) {
-            let pv = root._normVariants(parts[p]);
-            let ok = false;
-            for (let i = 0; i < pv.length; i++) {
-                if (ctx.meta[pv[i]]) { ok = true; break; }
+        if (parts.length >= 2) {
+            let allMatch = true;
+            for (let p = 0; p < parts.length; p++) {
+                let pv = root._normVariants(parts[p]);
+                let ok = false;
+                for (let i = 0; i < pv.length; i++) {
+                    if (ctx.meta[pv[i]]) { ok = true; break; }
+                }
+                if (!ok) allMatch = false;
             }
-            if (!ok) return false;
+            if (allMatch) return true;
+
+            let dashParts = t.split(/\s+[-–—]\s+/);
+            if (dashParts.length === 2) {
+                let p0v = root._normVariants(dashParts[0]);
+                let p1v = root._normVariants(dashParts[1]);
+                let p0Match = p0v.some(function(v) { return !!ctx.meta[v]; });
+                let p1Match = p1v.some(function(v) { return !!ctx.meta[v]; });
+                if (p0Match || p1Match) {
+                    if (p0Match && p1Match) return true;
+                    if (ctx.primary === "latin" && (root._reCjkG.test(dashParts[0]) || root._reCjkG.test(dashParts[1]))) return true;
+                    if (root._reTransParenLatin.test(dashParts[0]) || root._reTransParenLatin.test(dashParts[1])) return true;
+                }
+            }
         }
-        return true;
+        return false;
     }
 
     function _stripCredits(entries, ctx) {
@@ -766,7 +772,7 @@ Singleton {
                     e.text = t = "♪";
                     e.isWordSynced = false;
                     e.words = null;
-                } else if (root._reSectionLabel.test(t)) {
+                } else if (root._reSectionLabel.test(t) || root._isPerformerTag(t, ctx)) {
                     continue;
                 } else if (root._isHardCredit(t)) {
                     dropNext = !seenLyric && /[:：]\s*$/.test(t);
@@ -777,6 +783,7 @@ Singleton {
                     if (e.time < 15 && freq[root._norm(t)] === 1 && root._isMetaEcho(t, ctx)) continue;
                     if (i < firstLatinLyric && e.time < 25 && e._k === "c"
                         && root._countMatches(t, root._reLatinG) === 0) continue;
+                    if (ctx.primary === "latin" && e.time < 15 && root._reCjkG.test(t) && root._isMetaEcho(t, ctx)) continue;
                 }
                 dropNext = false;
             }
@@ -789,6 +796,28 @@ Singleton {
             }
             out.push(e);
         }
+
+        // Strip trailing credits, legal notices, and meta echoes from the outro
+        while (out.length > 0) {
+            let last = out[out.length - 1];
+            let lt = last.text;
+            if (lt === "♪") {
+                out.pop();
+                continue;
+            }
+            let isOutroCredit = root._isHardCredit(lt)
+                || root._reSoftEn.test(lt)
+                || root._reCjkSoft.test(lt)
+                || root._reLegal.test(lt)
+                || root._isMetaEcho(lt, ctx)
+                || (ctx.primary === "latin" && root._reCjkG.test(lt));
+            if (isOutroCredit) {
+                out.pop();
+            } else {
+                break;
+            }
+        }
+
         return out;
     }
 
@@ -808,13 +837,31 @@ Singleton {
         entries = root._pruneTranslations(entries, ctx);
         for (let i = 0; i < entries.length; i++) {
             let e = entries[i];
-            if (!e.isWordSynced && e.text !== "♪" && ctx.primary === ctx.stats) {
-                e.text = root._stripInlineTranslation(e.text, ctx.primary);
+            if (e.text !== "♪") {
+                if (ctx.primary === "latin" && root._reCjkG.test(e.text)) {
+                    let cleaned = root._stripInlineTranslation(e.text, "latin");
+                    if (cleaned !== e.text) {
+                        e.text = cleaned;
+                        if (e.isWordSynced && e.words && e.words.length > 0) {
+                            while (e.words.length > 0 && root._reCjkG.test(e.words[e.words.length - 1].text)) {
+                                e.words.pop();
+                            }
+                            while (e.words.length > 0 && /[\s()（）]/.test(e.words[e.words.length - 1].text.trim())) {
+                                e.words.pop();
+                            }
+                        }
+                    }
+                } else if (!e.isWordSynced && ctx.primary === ctx.stats) {
+                    e.text = root._stripInlineTranslation(e.text, ctx.primary);
+                }
             }
         }
         let parsed = root._stripCredits(entries, ctx);
 
-        // Drop trailing blank text
+        // Drop leading and trailing blank text
+        while (parsed.length > 0 && (!parsed[0].text || parsed[0].text.trim() === "")) {
+            parsed.shift();
+        }
         while (parsed.length > 0 && (!parsed[parsed.length - 1].text || parsed[parsed.length - 1].text.trim() === "")) {
             parsed.pop();
         }
@@ -968,7 +1015,7 @@ Singleton {
 
     Timer {
         id: fetchDebounce
-        interval: 120
+        interval: 250
         onTriggered: root.fetchLyrics(root.currentTrackName, root.currentArtistName)
     }
 
@@ -1083,22 +1130,13 @@ Singleton {
             let text = line.words[i].text;
             let chars = Array.from(text);
             let n = chars.length;
-            let weights = [];
-            let sumW = 0;
-            for (let j = 0; j < n; j++) {
-                let cw = root._charWeight(chars[j]);
-                weights.push(cw);
-                sumW += cw;
-            }
             let cx = [];
             let ct = [];
             let acc = "";
-            let t = 0;
             for (let j = 0; j < n; j++) {
                 acc += chars[j];
                 cx.push(j === n - 1 ? root.measurePixelWidth(prefix + text) : root.measurePixelWidth(prefix + acc));
-                t += weights[j];
-                ct.push(sumW > 0 ? t / sumW : (j + 1) / n);
+                ct.push((j + 1) / n);
             }
             prefix += text;
             let endX = n > 0 ? cx[n - 1] : prevW;
@@ -1145,10 +1183,6 @@ Singleton {
             root.precompileLineMetrics(lines[i]);
         }
         root.buildGroupIndex();
-    }
-
-    function ensureLineMetrics(line) {
-        root.precompileLineMetrics(line);
     }
 
     function getLineSweepFraction(line, currentSec) {
@@ -1327,7 +1361,6 @@ Singleton {
         }
 
         let maxAllowedPx = Math.max(160, (GlobalStates?.topBarMediaWidth ?? 440) - 135);
-        root.lastGroupWidth = maxAllowedPx;
 
         function isLineRepeat(k) {
             if (k < 0 || k >= lines.length) return false;

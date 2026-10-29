@@ -27,6 +27,10 @@ Singleton {
 	signal trackChanged(reverse: bool);
 
 	onPlayersChanged: Qt.callLater(root.updateBestPlayer);
+	onHasActiveDesktopSpotifyChanged: {
+		root._playerFilterRevision++;
+		Qt.callLater(root.updateBestPlayer);
+	}
 
 	property bool __reverse: false;
 
@@ -60,14 +64,15 @@ Singleton {
             return false;
         }
 
-        // If native desktop Spotify is running, ignore KDE Connect mirroring Spotify
-        if (isKde && identity.includes("spotify") && hasActiveDesktopSpotify) {
-            return false;
-        }
-
         let title = (player.trackTitle || "").trim().toLowerCase();
         let artist = (player.trackArtist || "").trim();
         let isPlaying = player.isPlaying || player.playbackState === MprisPlaybackState.Playing;
+
+        // If native desktop Spotify is running, ignore KDE Connect mirroring Spotify or stale paused sessions
+        if (isKde && hasActiveDesktopSpotify && (identity.includes("spotify") || !isPlaying)) {
+            return false;
+        }
+
         if (!isPlaying && (title === "" || title === "untitled") && artist === "") {
             return false;
         }

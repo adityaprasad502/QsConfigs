@@ -32,8 +32,12 @@ Singleton {
     property int toHour: Number(to.split(":")[0])
     property int toMinute: Number(to.split(":")[1])
 
-    property int clockHour: DateTime.clock.hours
-    property int clockMinute: DateTime.clock.minutes
+    property int clockHour: {
+        return (DateTime.clock && DateTime.clock.date) ? DateTime.clock.date.getHours() : 0;
+    }
+    property int clockMinute: {
+        return (DateTime.clock && DateTime.clock.date) ? DateTime.clock.date.getMinutes() : 0;
+    }
 
     property var manualActive
     property int manualActiveHour

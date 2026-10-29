@@ -35,7 +35,7 @@ Item {
     readonly property bool isPlaying: activePlayer?.playbackState === MprisPlaybackState.Playing
     readonly property bool isPaused: activePlayer != null && !root.isPlaying
     readonly property bool hasMedia: activePlayer != null && (root.isPlaying || (StringUtils.cleanMusicTitle(activePlayer?.trackTitle) || "") !== "")
-    readonly property bool hasLyrics: root.hasMedia && LyricsService.currentLyricLine && LyricsService.currentLyricLine.length > 0
+    readonly property bool hasLyrics: root.hasMedia && ((LyricsService.currentLyricLine && LyricsService.currentLyricLine.length > 0) || LyricsService.lyricLines.length > 0)
     readonly property bool isLive: {
         if (!activePlayer || !root.hasMedia) return false;
         let len = activePlayer?.length || 0;
@@ -207,7 +207,7 @@ Item {
                 if (!root.hasMedia) {
                     return "Everything happens for a reason";
                 }
-                if (root.hasLyrics) {
+                if (root.hasLyrics && LyricsService.currentLyricLine && LyricsService.currentLyricLine.length > 0) {
                     if (LyricsService.hasWordSync) {
                         return LyricsService.currentLyricLineDim || LyricsService.currentLyricLineRich || LyricsService.currentLyricLine;
                     }

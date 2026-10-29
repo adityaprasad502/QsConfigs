@@ -19,20 +19,21 @@ Singleton {
         }
     }
     property string time: {
-        const fmt = Config.options?.time.format ?? "hh:mm";
+        if (!clock?.date || !Config.options?.time) return "";
+        const fmt = Config.options.time.format ?? "hh:mm";
         if (Config.options.time.secondPrecision) {
             // Insert :ss before trailing am/pm suffix (e.g. " ap", " AP") or append it
             const withSeconds = fmt.replace(/( [aA][pP]?)$/, ":ss$1");
             // If no suffix was replaced, append :ss
             const finalFmt = withSeconds === fmt ? fmt + ":ss" : withSeconds;
-            return Qt.locale().toString(clock.date, finalFmt);
+            return Qt.locale().toString(clock.date, finalFmt) ?? "";
         }
-        return Qt.locale().toString(clock.date, fmt);
+        return Qt.locale().toString(clock.date, fmt) ?? "";
     }
-    property string shortDate: Qt.locale().toString(clock.date, Config.options?.time.shortDateFormat ?? "dd/MM")
-    property string date: Qt.locale().toString(clock.date, Config.options?.time.dateWithYearFormat ?? "dd/MM/yyyy")
-    property string longDate: Qt.locale().toString(clock.date, Config.options?.time.dateFormat ?? "dd/MM")
-    property string collapsedCalendarFormat: Qt.locale().toString(clock.date, "dddd, MMMM dd")
+    property string shortDate: (clock?.date && Config.options?.time) ? (Qt.locale().toString(clock.date, Config.options.time.shortDateFormat ?? "dd/MM") ?? "") : ""
+    property string date: (clock?.date && Config.options?.time) ? (Qt.locale().toString(clock.date, Config.options.time.dateWithYearFormat ?? "dd/MM/yyyy") ?? "") : ""
+    property string longDate: (clock?.date && Config.options?.time) ? (Qt.locale().toString(clock.date, Config.options.time.dateFormat ?? "dd/MM") ?? "") : ""
+    property string collapsedCalendarFormat: clock?.date ? (Qt.locale().toString(clock.date, "dddd, MMMM dd") ?? "") : ""
     property string uptime: "0h, 0m"
 
     Timer {

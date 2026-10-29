@@ -50,7 +50,7 @@ Scope {
             let dbus1 = (p1.dbusName || "").toLowerCase();
             let isKde1 = dbus1.includes("kdeconnect");
             let identity1 = (p1.identity || "").toLowerCase();
-            if (isKde1 && identity1.includes("spotify") && MprisController.hasActiveDesktopSpotify) {
+            if (isKde1 && MprisController.hasActiveDesktopSpotify && (identity1.includes("spotify") || !isPlaying1)) {
                 continue;
             }
             let len1 = p1.length || 0;

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-import json
 import base64
-import zlib
+import gzip
+import json
 import re
 import time
-import gzip
-import urllib.request
 import urllib.parse
+import urllib.request
+import zlib
+
 
 def _d(h):
     return bytes.fromhex(h).decode()
@@ -30,7 +31,7 @@ _U7 = _d("68747470733a2f2f6d757369632e3136332e636f6d2f6170692f736f6e672f6c797269
 _NE_REF = _d("68747470733a2f2f6d757369632e3136332e636f6d2f")
 _P2_REF = _d("68747470733a2f2f792e71712e636f6d2f")
 
-_CONTENT_RE = re.compile(r"<content[^>]*><!\[CDATA\[(.*?)\]\]></content>", re.S)
+_CONTENT_RE = re.compile(r"<content[^>]*><!\[CDATA\[(.*?)\]\]></content>", re.DOTALL)
 
 # Shared monotonic deadline (set by the orchestrator) so no request outlives the overall budget.
 _deadline = 0.0
@@ -39,7 +40,7 @@ def set_deadline(t):
     global _deadline
     _deadline = t
 
-def _http(url, headers=None, data=None, timeout=4.0):
+def _http(url, headers=None, data=None, timeout=6.0):
     """GET/POST returning the (gunzipped) body. Honors the shared deadline."""
     if _deadline:
         remaining = _deadline - time.monotonic()
