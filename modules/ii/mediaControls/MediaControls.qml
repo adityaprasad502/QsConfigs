@@ -15,9 +15,13 @@ import Quickshell.Hyprland
 Scope {
     id: root
     property bool visible: false
+    property int revision: 0
     readonly property MprisPlayer activePlayer: MprisController.activePlayer
     readonly property var realPlayers: MprisController.players
-    readonly property var meaningfulPlayers: filterDuplicatePlayers(realPlayers)
+    readonly property var meaningfulPlayers: {
+        root.revision;
+        return filterDuplicatePlayers(realPlayers);
+    }
     readonly property real osdWidth: Appearance.sizes.osdWidth
     readonly property real widgetWidth: !Config.options.bar.vertical && GlobalStates.topBarMediaWidth > 100 ? GlobalStates.topBarMediaWidth : Appearance.sizes.mediaControlsWidth
     readonly property real widgetHeight: Appearance.sizes.mediaControlsHeight
@@ -39,6 +43,14 @@ Scope {
             let artist1 = (p1.trackArtist || "").trim();
             let isPlaying1 = p1.isPlaying || p1.playbackState === MprisPlaybackState.Playing;
             if (!isPlaying1 && (title1 === "" || title1 === "untitled") && artist1 === "") {
+                continue;
+            }
+
+            // Exclude zombie players (e.g. KDE Connect stuck past song length)
+            let dbus1 = (p1.dbusName || "").toLowerCase();
+            let len1 = p1.length || 0;
+            let pos1 = p1.position || 0;
+            if (dbus1.includes("kdeconnect") && len1 > 0 && pos1 >= (len1 - 1.0)) {
                 continue;
             }
 
@@ -77,8 +89,8 @@ Scope {
             group.forEach(idx => used.add(idx));
         }
 
-        if (filtered.length === 0 && players.length > 0) {
-            filtered.push(root.activePlayer ?? players[0]);
+        if (filtered.length === 0 && root.activePlayer) {
+            filtered.push(root.activePlayer);
         }
 
         filtered.sort((a, b) => {
@@ -115,6 +127,9 @@ Scope {
         id: mediaControlsLoader
         active: GlobalStates.mediaControlsOpen
         onActiveChanged: {
+            if (mediaControlsLoader.active) {
+                root.revision++;
+            }
             if (!mediaControlsLoader.active && root.realPlayers.length === 0) {
                 GlobalStates.mediaControlsOpen = false;
             }

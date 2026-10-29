@@ -25,12 +25,8 @@ Item { // Player instance
     readonly property bool isLive: {
         if (!root.player) return false;
         let len = root.player?.length || 0;
-        let pos = root.player?.position || 0;
         let canSeek = root.player?.canSeek ?? false;
-        if (len <= 0) return true;
-        if (!canSeek) return true;
-        if (len > 0 && Math.max(0, len - pos) <= 0) return true;
-        return false;
+        return len <= 0 || !canSeek;
     }
     property list<real> visualizerPoints: []
     property real maxVisualizerValue: 850 // Max value in the data points
@@ -66,7 +62,12 @@ Item { // Player instance
                 root.lastKnownTimestamp = Date.now();
                 elapsedSec = 0;
             }
-            root.interpolatedPosition = Math.min(root.player?.length || 0, root.lastKnownPosition + elapsedSec);
+            let len = root.player?.length || 0;
+            if (len > 0) {
+                root.interpolatedPosition = Math.min(len, root.lastKnownPosition + elapsedSec);
+            } else {
+                root.interpolatedPosition = root.lastKnownPosition + elapsedSec;
+            }
         }
     }
 
@@ -404,7 +405,14 @@ Item { // Player instance
                         font.pixelSize: Appearance.font.pixelSize.small
                         color: blendedColors.colSubtext
                         elide: Text.ElideRight
-                        text: StringUtils.friendlyTimeForSeconds(root.player?.position)
+                        text: {
+                            if (root.isLive) {
+                                return StringUtils.friendlyTimeForSeconds(root.player?.position);
+                            }
+                            let len = root.player?.length || 0;
+                            let pos = root.interpolatedPosition || root.player?.position || 0;
+                            return StringUtils.friendlyTimeForSeconds(len > 0 ? Math.min(len, pos) : pos);
+                        }
                     }
 
                     StyledText {

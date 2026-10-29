@@ -17,7 +17,11 @@ import qs.modules.common.functions
  */
 Singleton {
 	id: root;
-	property list<MprisPlayer> players: Mpris.players.values.filter(player => isRealPlayer(player));
+	property int _playerFilterRevision: 0;
+	property list<MprisPlayer> players: {
+		_playerFilterRevision;
+		return Mpris.players.values.filter(player => isRealPlayer(player));
+	}
 	property MprisPlayer trackedPlayer: null;
 	property MprisPlayer activePlayer: trackedPlayer ?? root.players[0] ?? null;
 	signal trackChanged(reverse: bool);
@@ -58,6 +62,18 @@ Singleton {
             return false;
         }
 
+        // KDE Connect zombie check: if song has reached or exceeded its duration
+        if (dbus.includes("kdeconnect")) {
+            let len = player.length || 0;
+            let pos = player.position || 0;
+            if (len > 0 && pos >= (len - 1.0)) {
+                if (isPlaying && player.canPause) {
+                    player.pause();
+                }
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -89,6 +105,12 @@ Singleton {
 		let best = null;
 		let bestScore = -99999;
 		for (const player of root.players) {
+			let dbus = (player.dbusName || "").toLowerCase();
+			let len = player.length || 0;
+			let pos = player.position || 0;
+			if (dbus.includes("kdeconnect") && len > 0 && pos >= (len - 1.0)) {
+				continue;
+			}
 			let score = root.getPlayerScore(player);
 			if (score > bestScore) {
 				bestScore = score;
@@ -107,7 +129,7 @@ Singleton {
 
 	// Player tracking
 	Instantiator {
-		model: root.players;
+		model: Mpris.players.values;
 
 		Connections {
 			required property MprisPlayer modelData;
@@ -125,6 +147,28 @@ Singleton {
 			}
 
 			function onPlaybackStateChanged() {
+				let isKde = (modelData.dbusName || "").toLowerCase().includes("kdeconnect");
+				let len = modelData.length || 0;
+				let pos = modelData.position || 0;
+				let isZombie = isKde && len > 0 && pos >= (len - 1.0);
+
+				if (isZombie) {
+					if (modelData.isPlaying && modelData.canPause) {
+						modelData.pause();
+					}
+					if (root.players.includes(modelData)) {
+						root._playerFilterRevision++;
+					}
+					if (root.trackedPlayer === modelData) {
+						root.updateBestPlayer();
+					}
+					return;
+				}
+
+				if (!root.players.includes(modelData) && root.isRealPlayer(modelData)) {
+					root._playerFilterRevision++;
+				}
+
 				if (modelData.isPlaying) {
 					if (!root.trackedPlayer || !root.trackedPlayer.isPlaying || root.getPlayerScore(modelData) >= root.getPlayerScore(root.trackedPlayer)) {
 						root.trackedPlayer = modelData;
@@ -135,22 +179,58 @@ Singleton {
 			}
 
 			function onPostTrackChanged() {
+				let isKde = (modelData.dbusName || "").toLowerCase().includes("kdeconnect");
+				let len = modelData.length || 0;
+				let pos = modelData.position || 0;
+				if (isKde && !(len > 0 && pos >= (len - 1.0))) {
+					if (!root.players.includes(modelData) && root.isRealPlayer(modelData)) {
+						root._playerFilterRevision++;
+					}
+				}
 				if (modelData.isPlaying) {
 					root.trackedPlayer = modelData;
 				}
 			}
 
 			function onTrackTitleChanged() {
+				let isKde = (modelData.dbusName || "").toLowerCase().includes("kdeconnect");
+				let len = modelData.length || 0;
+				let pos = modelData.position || 0;
+				if (isKde && !(len > 0 && pos >= (len - 1.0))) {
+					if (!root.players.includes(modelData) && root.isRealPlayer(modelData)) {
+						root._playerFilterRevision++;
+					}
+				}
 				if (modelData.isPlaying) {
 					root.trackedPlayer = modelData;
 				}
 			}
 
 			function onPositionChanged() {
+				let isKde = (modelData.dbusName || "").toLowerCase().includes("kdeconnect");
+				let len = modelData.length || 0;
+				let pos = modelData.position || 0;
+				let isPlaying = modelData.isPlaying || modelData.playbackState === MprisPlaybackState.Playing;
+
+				if (isKde) {
+					if (len > 0 && pos >= (len - 1.0)) {
+						if (isPlaying && modelData.canPause) {
+							modelData.pause();
+						}
+						if (root.players.includes(modelData)) {
+							root._playerFilterRevision++;
+						}
+						if (root.trackedPlayer === modelData) {
+							root.updateBestPlayer();
+						}
+						return;
+					} else if (!root.players.includes(modelData) && root.isRealPlayer(modelData)) {
+						root._playerFilterRevision++;
+					}
+				}
+
 				// If current tracked player has finished its track, check if another active player should take over
 				if (root.trackedPlayer === modelData) {
-					let len = modelData.length || 0;
-					let pos = modelData.position || 0;
 					if (len > 0 && pos >= (len - 0.5)) {
 						let best = root.getBestPlayer();
 						if (best && best !== modelData && (best.isPlaying || best.playbackState === MprisPlaybackState.Playing)) {

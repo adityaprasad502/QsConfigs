@@ -19,12 +19,8 @@ MouseArea {
     readonly property bool isLive: {
         if (!activePlayer || !root.hasMedia) return false;
         let len = activePlayer?.length || 0;
-        let pos = activePlayer?.position || 0;
         let canSeek = activePlayer?.canSeek ?? false;
-        if (len <= 0) return true;
-        if (!canSeek) return true;
-        if (len > 0 && Math.max(0, len - pos) <= 0) return true;
-        return false;
+        return len <= 0 || !canSeek;
     }
     readonly property string cleanedTitle: StringUtils.cleanMusicTitle(activePlayer?.trackTitle) || Translation.tr("No media")
 
