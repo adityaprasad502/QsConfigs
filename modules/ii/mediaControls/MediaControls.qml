@@ -46,11 +46,16 @@ Scope {
                 continue;
             }
 
-            // Exclude zombie players (e.g. KDE Connect stuck past song length)
+            // Exclude zombie players or KDE Connect mirroring Spotify when native Spotify is present
             let dbus1 = (p1.dbusName || "").toLowerCase();
+            let isKde1 = dbus1.includes("kdeconnect");
+            let identity1 = (p1.identity || "").toLowerCase();
+            if (isKde1 && identity1.includes("spotify") && MprisController.hasActiveDesktopSpotify) {
+                continue;
+            }
             let len1 = p1.length || 0;
             let pos1 = p1.position || 0;
-            if (dbus1.includes("kdeconnect") && len1 > 0 && pos1 >= (len1 - 1.0)) {
+            if (isKde1 && len1 > 0 && pos1 >= (len1 - 1.0)) {
                 continue;
             }
 

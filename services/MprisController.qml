@@ -35,6 +35,9 @@ Singleton {
 	readonly property bool hasActivePlasmaIntegration: Mpris.players.values.some(
 		p => p.dbusName?.startsWith('org.mpris.MediaPlayer2.plasma-browser-integration')
 	)
+	readonly property bool hasActiveDesktopSpotify: Mpris.players.values.some(
+		p => (p.dbusName || "").toLowerCase().includes("mediaplayer2.spotify")
+	)
 	function isRealPlayer(player) {
         if (!player) return false;
         if (!Config.options.media.filterDuplicatePlayers) {
@@ -42,6 +45,8 @@ Singleton {
         }
 
         let dbus = (player.dbusName || "").toLowerCase();
+        let isKde = dbus.includes("kdeconnect");
+        let identity = (player.identity || "").toLowerCase();
 
         if (hasActivePlasmaIntegration && (dbus.startsWith('org.mpris.mediaplayer2.firefox') || dbus.startsWith('org.mpris.mediaplayer2.chromium'))) {
             return false;
@@ -55,6 +60,11 @@ Singleton {
             return false;
         }
 
+        // If native desktop Spotify is running, ignore KDE Connect mirroring Spotify
+        if (isKde && identity.includes("spotify") && hasActiveDesktopSpotify) {
+            return false;
+        }
+
         let title = (player.trackTitle || "").trim().toLowerCase();
         let artist = (player.trackArtist || "").trim();
         let isPlaying = player.isPlaying || player.playbackState === MprisPlaybackState.Playing;
@@ -63,13 +73,10 @@ Singleton {
         }
 
         // KDE Connect zombie check: if song has reached or exceeded its duration
-        if (dbus.includes("kdeconnect")) {
+        if (isKde) {
             let len = player.length || 0;
             let pos = player.position || 0;
             if (len > 0 && pos >= (len - 1.0)) {
-                if (isPlaying && player.canPause) {
-                    player.pause();
-                }
                 return false;
             }
         }
@@ -153,9 +160,6 @@ Singleton {
 				let isZombie = isKde && len > 0 && pos >= (len - 1.0);
 
 				if (isZombie) {
-					if (modelData.isPlaying && modelData.canPause) {
-						modelData.pause();
-					}
 					if (root.players.includes(modelData)) {
 						root._playerFilterRevision++;
 					}
@@ -214,9 +218,6 @@ Singleton {
 
 				if (isKde) {
 					if (len > 0 && pos >= (len - 1.0)) {
-						if (isPlaying && modelData.canPause) {
-							modelData.pause();
-						}
 						if (root.players.includes(modelData)) {
 							root._playerFilterRevision++;
 						}
