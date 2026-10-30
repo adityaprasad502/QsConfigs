@@ -28,9 +28,8 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import syllables as sy
 
-TOTAL_BUDGET = 18.0      # hard cap for any request
-WORD_BUDGET = 15.0       # how long we wait for word-synced providers
-LRC_BUDGET = 12.0
+TOTAL_BUDGET = 18.0         # hard cap for any request
+PROVIDER_BUDGET = 15.0      # timeout for individual providers (word or line)
 
 TTL_WORD = 30 * 86400        # word-synced lyrics cached 30 days (refreshed on replay)
 TTL_LRC = 7 * 86400          # non-karaoke line-synced lyrics expire after 7 days
@@ -208,10 +207,10 @@ def _lrc_json(path):
 
             if status == 404:
                 return 404, None
-            if status in (429, 503) and attempt < 2 and remaining > 1.5:
+            if status in (429, 503) and attempt < 2 and remaining > 1.8:
                 retry_after = headers_dict.get("retry-after")
-                base_wait = float(retry_after) if retry_after and retry_after.isdigit() else 1.2
-                wait = max(1.2, base_wait) + (attempt * 0.6) + random.uniform(0.1, 0.4)
+                base_wait = float(retry_after) if retry_after and retry_after.isdigit() else 1.5
+                wait = max(1.5, base_wait) + (attempt * 0.8) + random.uniform(0.2, 0.5)
                 if remaining > wait + 0.3:
                     time.sleep(wait)
                     continue
@@ -219,7 +218,14 @@ def _lrc_json(path):
                 body = gzip.decompress(body)
             if status != 200:
                 return status, None
-            return 200, json.loads(body)
+            content_type = headers_dict.get("content-type", "")
+            # Protect against non-JSON edge/firewall responses
+            if content_type and "application/json" not in content_type and not body.strip().startswith((b"{", b"[")):
+                return 0, None
+            try:
+                return 200, json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return 0, None
         except Exception:
             try:
                 conn.close()
@@ -231,7 +237,7 @@ def _lrc_json(path):
             return 0, None
     return 0, None
 
-def pick_lrc(results, title, artist, duration):
+def pick_lrc(results, title, artist, duration, album=""):
     if not isinstance(results, list):
         return None
     title_vars = sy.norm_variants(title)
@@ -243,7 +249,11 @@ def pick_lrc(results, title, artist, duration):
 
     best, best_score = None, -9999
     for r in results:
-        if not isinstance(r, dict) or not (r.get("syncedLyrics") or r.get("plainLyrics")):
+        if not isinstance(r, dict):
+            continue
+        has_lyrics = bool(r.get("syncedLyrics") or r.get("plainLyrics"))
+        is_inst = bool(r.get("instrumental"))
+        if not has_lyrics and not is_inst:
             continue
         rel = sy._relation(title_vars, sy.norm_variants(r.get("trackName")), 3)
         if rel == 0:
@@ -277,31 +287,47 @@ def pick_lrc(results, title, artist, duration):
 
         if r.get("syncedLyrics"):
             score += 20
+        if album and r.get("albumName"):
+            cand_alb = r.get("albumName", "").lower()
+            if album.lower() in cand_alb or cand_alb in album.lower():
+                score += 15
         if score > best_score:
             best, best_score = r, score
 
     min_thresh = 45 if artist_vars else 30
     return best if best is not None and best_score >= min_thresh else None
 
-def lrc_lookup(title, artist, duration):
+def lrc_lookup(title, artist, duration, album=""):
     """-> (result_dict_or_None, definitive, reason). Paces requests to prevent 503 ServerOverloaded."""
     primary = sy._ARTIST_SPLIT.split(artist or "")[0].strip()
 
-    # 1. If duration and primary artist are available, try direct exact lookup first
-    if duration > 0 and primary:
-        get_path = "/api/get?" + urllib.parse.urlencode(
-            {"track_name": title, "artist_name": primary, "duration": int(round(duration))})
+    # 1. If primary artist is available, try direct exact lookup first
+    if primary:
+        params = {"track_name": title, "artist_name": primary}
+        # LRCLIB strictly enforces 1 <= duration <= 3600 (returns 400 ValidationError otherwise)
+        dur_int = int(round(duration)) if duration > 0 else 0
+        if 1 <= dur_int <= 3600:
+            params["duration"] = dur_int
+        if album:
+            params["album_name"] = album
+        get_path = "/api/get?" + urllib.parse.urlencode(params)
         status, data = _lrc_json(get_path)
-        if status == 200 and isinstance(data, dict) and (data.get("syncedLyrics") or data.get("plainLyrics")):
-            return data, True, ""
-        # Pacing delay between sequential requests to avoid tripping LRCLIB's IP burst limiter
-        time.sleep(0.6)
+        if status == 200 and isinstance(data, dict):
+            if data.get("syncedLyrics") or data.get("plainLyrics"):
+                return data, True, ""
+            if data.get("instrumental") is True:
+                return {"instrumental": True}, True, ""
+        # Generous pacing delay between sequential requests to avoid tripping LRCLIB rate limits
+        time.sleep(1.5)
 
-    # 2. Fallback to search query
-    search_path = "/api/search?q=" + urllib.parse.quote(f"{title} {primary}".strip())
+    # 2. Fallback to structured search query
+    search_params = {"track_name": title}
+    if primary:
+        search_params["artist_name"] = primary
+    search_path = "/api/search?" + urllib.parse.urlencode(search_params)
     status, results = _lrc_json(search_path)
     if status == 200 and isinstance(results, list):
-        return pick_lrc(results, title, artist, duration), True, ""
+        return pick_lrc(results, title, artist, duration, album), True, ""
     if status in (429, 503):
         return None, False, f"Server busy ({status})"
     if status != 200:
@@ -312,7 +338,7 @@ def lrc_lookup(title, artist, duration):
 # ------------------------------------------------------------------------------------------------
 # Orchestration
 # ------------------------------------------------------------------------------------------------
-def run(title, artist, duration, cache_dir, emit):
+def run(title, artist, duration, cache_dir, emit, album=""):
     start = time.monotonic()
     sy.set_deadline(start + TOTAL_BUDGET)
     now = time.time()
@@ -322,6 +348,7 @@ def run(title, artist, duration, cache_dir, emit):
 
     need_lrc = True
     lrc = None
+    is_instrumental = False
 
     ts = entry.get("ts", 0)
     if entry.get("word") and now - ts < TTL_WORD:
@@ -330,6 +357,13 @@ def run(title, artist, duration, cache_dir, emit):
         sz_str = f", {_file_sz(path)}" if _file_sz(path) else ""
         _log(f"[HIT] Karaoke ({entry.get('src', 'cache')}, {age_str}{sz_str}): \"{title}\" - \"{artist}\"")
         emit({"k": "word", "text": entry["word"]})
+        return
+    if entry.get("instrumental") and now - ts < TTL_WORD:
+        _touch(path)
+        age_str = f"{_format_time_interval(now - ts)} ago"
+        sz_str = f" ({_file_sz(path)})" if _file_sz(path) else ""
+        _log(f"[HIT] Instrumental ({age_str}{sz_str}): \"{title}\" - \"{artist}\"")
+        emit({"k": "none"})
         return
     if entry.get("none"):
         if now - entry["none"] < TTL_NONE:
@@ -374,11 +408,13 @@ def run(title, artist, duration, cache_dir, emit):
             t0 = time.monotonic()
             try:
                 _log("[QUERY] lrc: Searching line-synced lyrics...")
-                res, definitive, reason = lrc_lookup(title, artist, duration)
+                res, definitive, reason = lrc_lookup(title, artist, duration, album)
                 elapsed = time.monotonic() - t0
                 if res and (res.get("syncedLyrics") or res.get("plainLyrics")):
                     mode = "synced" if res.get("syncedLyrics") else "plain"
                     _log(f"[RESULT] lrc: Found {mode} lyrics ({elapsed:.2f}s)")
+                elif res and res.get("instrumental"):
+                    _log(f"[RESULT] lrc: Confirmed instrumental ({elapsed:.2f}s)")
                 elif reason:
                     _log(f"[RESULT] lrc: {reason} ({elapsed:.2f}s)")
                 else:
@@ -525,20 +561,15 @@ def run(title, artist, duration, cache_dir, emit):
 
     while lrc_pending or words_pending:
         t = time.monotonic() - start
-        limits = []
-        if lrc_pending:
-            limits.append(LRC_BUDGET - t)
-        if words_pending:
-            limits.append(WORD_BUDGET - t)
-        wait = min(limits)
+        wait = PROVIDER_BUDGET - t
         if wait <= 0:
-            if words_pending and t >= WORD_BUDGET:
+            if words_pending:
                 for timed_out in sorted(pending_providers):
-                    _log(f"[TIMEOUT] {timed_out}: Exceeded {WORD_BUDGET:.0f}s word budget")
+                    _log(f"[TIMEOUT] {timed_out} ({t:.2f}s): Exceeded {PROVIDER_BUDGET:.0f}s budget")
                 pending_providers.clear()
                 words_pending = 0
-            if lrc_pending and t >= LRC_BUDGET:
-                _log(f"[TIMEOUT] lrc: Exceeded {LRC_BUDGET:.0f}s line budget")
+            if lrc_pending:
+                _log(f"[TIMEOUT] lrc ({t:.2f}s): Exceeded {PROVIDER_BUDGET:.0f}s budget")
                 lrc_pending = False
             continue
         try:
@@ -550,13 +581,16 @@ def run(title, artist, duration, cache_dir, emit):
             lrc_pending = False
             _, result, lrc_definitive = ev
             if result:
-                lrc = {"synced": result.get("syncedLyrics") or "", "plain": result.get("plainLyrics") or ""}
-                if not best_word:
-                    emit({"k": "lrc", "synced": lrc["synced"], "plain": lrc["plain"]})
-                    if words_pending > 0:
-                        _log("[EMIT] Using lrc line-synced lyrics (awaiting karaoke...)")
-                        if path:
-                            cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": 0})
+                if result.get("instrumental"):
+                    is_instrumental = True
+                else:
+                    lrc = {"synced": result.get("syncedLyrics") or "", "plain": result.get("plainLyrics") or ""}
+                    if not best_word:
+                        emit({"k": "lrc", "synced": lrc["synced"], "plain": lrc["plain"]})
+                        if words_pending > 0:
+                            _log("[EMIT] Using lrc line-synced lyrics (awaiting karaoke...)")
+                            if path:
+                                cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": 0})
         else:
             words_pending -= 1
             _, name, text, score = ev
@@ -596,6 +630,13 @@ def run(title, artist, duration, cache_dir, emit):
 
     # No word-synced result
     elapsed = time.monotonic() - start
+    if is_instrumental and not lrc:
+        if path:
+            cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "none": time.time(), "instrumental": True})
+            sz_str = f" ({_file_sz(path)})" if _file_sz(path) else ""
+            _log(f"[NOT FOUND] Done in {elapsed:.2f}s: confirmed instrumental track{sz_str}")
+        emit({"k": "none"})
+        return
     if path:
         if lrc:
             cache_save(path, {"ts": entry.get("ts") or time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": time.time()})
@@ -607,7 +648,7 @@ def run(title, artist, duration, cache_dir, emit):
             _log(f"[NOT FOUND] Done in {elapsed:.2f}s: no lyrics found across any provider{sz_str}")
     if not lrc:
         if not lrc_definitive:
-            if elapsed >= WORD_BUDGET:
+            if elapsed >= PROVIDER_BUDGET:
                 _log(f"[TIMEOUT] Done in {elapsed:.2f}s: search budget exceeded")
             else:
                 _log(f"[FAILED] Done in {elapsed:.2f}s: network or provider error")
@@ -624,6 +665,7 @@ def main(argv):
     except ValueError:
         duration = 0
     cache_dir = argv[4] if len(argv) > 4 else ""
+    album = argv[5] if len(argv) > 5 else ""
 
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -635,7 +677,7 @@ def main(argv):
         sys.stdout.flush()
 
     try:
-        run(title, artist, duration, cache_dir, emit)
+        run(title, artist, duration, cache_dir, emit, album)
     except Exception:
         emit({"k": "fail"})
     return 0

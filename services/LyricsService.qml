@@ -347,7 +347,8 @@ Singleton {
             cleanTrack,
             cleanArtist,
             String(Math.round(activePlayer?.length || 0)),
-            root._cacheDir
+            root._cacheDir,
+            activePlayer?.trackAlbum || ""
         ];
         root._fetchProc = proc;
         proc.running = true;
