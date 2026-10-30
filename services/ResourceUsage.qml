@@ -51,6 +51,7 @@ Singleton {
 
     property string maxAvailableMemoryString: kbToGbString(ResourceUsage.memoryTotal)
     property string maxAvailableSwapString: kbToGbString(ResourceUsage.swapTotal)
+    property string maxAvailableCpuString: "--"
     property string cpuTempString: "---"
     property string cpuCurrentFreqString: "---"
 

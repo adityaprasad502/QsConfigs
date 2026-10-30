@@ -111,8 +111,7 @@ def cleanup_device(dev_id):
             except Exception:
                 pass
         del device_receivers[dev_id]
-    if dev_id in device_states:
-        del device_states[dev_id]
+    device_states.pop(dev_id, None)
 
 def make_battery_handler(dev_id, state, reachable_state):
     def handler(is_charging, charge, **kw):
@@ -296,7 +295,7 @@ def setup_device(dev_id, name=None):
 def sync_all_devices():
     found_devices = get_paired_devices()
     current_ids = set(device_receivers.keys())
-    found_ids = set(dev_id for dev_id, _ in found_devices)
+    found_ids = {dev_id for dev_id, _ in found_devices}
 
     # Remove unlisted devices
     for dev_id in (current_ids - found_ids):
@@ -409,5 +408,5 @@ try:
     sync_all_devices()
     GLib.timeout_add_seconds(30, periodic_recheck)
     GLib.MainLoop().run()
-except Exception as e:
+except Exception:
     sys.exit(1)

@@ -3,7 +3,6 @@
 import argparse
 import cv2
 import json
-import numpy as np
 import sys
 
 DEFAULT_IMAGE_PATH = '/tmp/quickshell/media/screenshot/image'

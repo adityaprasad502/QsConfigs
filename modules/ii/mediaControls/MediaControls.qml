@@ -39,26 +39,6 @@ Scope {
             let p1 = players[i];
             if (!p1) continue;
 
-            let title1 = (p1.trackTitle || "").trim().toLowerCase();
-            let artist1 = (p1.trackArtist || "").trim();
-            let isPlaying1 = p1.isPlaying || p1.playbackState === MprisPlaybackState.Playing;
-            if (!isPlaying1 && (title1 === "" || title1 === "untitled") && artist1 === "") {
-                continue;
-            }
-
-            // Exclude zombie players or KDE Connect mirroring Spotify when native Spotify is present
-            let dbus1 = (p1.dbusName || "").toLowerCase();
-            let isKde1 = dbus1.includes("kdeconnect");
-            let identity1 = (p1.identity || "").toLowerCase();
-            if (isKde1 && MprisController.hasActiveDesktopSpotify && (identity1.includes("spotify") || !isPlaying1)) {
-                continue;
-            }
-            let len1 = p1.length || 0;
-            let pos1 = p1.position || 0;
-            if (isKde1 && len1 > 0 && pos1 >= (len1 - 1.0)) {
-                continue;
-            }
-
             let group = [i];
             let cTitle1 = StringUtils.cleanMusicTitle(p1.trackTitle).toLowerCase();
 
@@ -74,16 +54,10 @@ Scope {
             }
 
             let bestIdx = group[0];
-            let bestScore = -1;
+            let bestScore = -99999;
             for (let g = 0; g < group.length; g++) {
                 let idx = group[g];
-                let p = players[idx];
-                let score = 0;
-                if (p.isPlaying || p.playbackState === MprisPlaybackState.Playing) score += 100;
-                if (p.trackArtUrl && p.trackArtUrl.length > 0) score += 50;
-                if (!((p.dbusName || "").toLowerCase().includes("kdeconnect"))) score += 30;
-                if (p.length > 0) score += 20;
-                if (p.trackArtist && p.trackArtist.length > 0) score += 10;
+                let score = MprisController.getPlayerScore(players[idx]);
                 if (score > bestScore) {
                     bestScore = score;
                     bestIdx = idx;

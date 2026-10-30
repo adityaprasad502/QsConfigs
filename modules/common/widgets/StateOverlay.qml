@@ -16,7 +16,7 @@ Rectangle {
         anchors.fill: parent
         shown: root.hover
         sourceComponent: StateLayer {
-            state: StateLayer.State.Hover
+            stateType: StateLayer.State.Hover
             color: root.contentColor
             topLeftRadius: root.topLeftRadius
             topRightRadius: root.topRightRadius
@@ -29,7 +29,7 @@ Rectangle {
         anchors.fill: parent
         shown: root.focus
         sourceComponent: StateLayer {
-            state: StateLayer.State.Focus
+            stateType: StateLayer.State.Focus
             color: root.contentColor
             topLeftRadius: root.topLeftRadius
             topRightRadius: root.topRightRadius
@@ -42,7 +42,7 @@ Rectangle {
         anchors.fill: parent
         shown: root.press
         sourceComponent: StateLayer {
-            state: StateLayer.State.Press
+            stateType: StateLayer.State.Press
             color: root.contentColor
             topLeftRadius: root.topLeftRadius
             topRightRadius: root.topRightRadius
@@ -55,7 +55,7 @@ Rectangle {
         anchors.fill: parent
         shown: root.drag
         sourceComponent: StateLayer {
-            state: StateLayer.State.Drag
+            stateType: StateLayer.State.Drag
             color: root.contentColor
             topLeftRadius: root.topLeftRadius
             topRightRadius: root.topRightRadius

@@ -8,8 +8,8 @@ Rectangle {
         Hover, Focus, Press, Drag
     }
 
-    property var state: StateLayer.State.Hover
-    opacity: switch(state) {
+    property var stateType: StateLayer.State.Hover
+    opacity: switch(stateType) {
         case StateLayer.State.Hover: return 0.08;
         case StateLayer.State.Focus: return 0.1;
         case StateLayer.State.Press: return 0.1;

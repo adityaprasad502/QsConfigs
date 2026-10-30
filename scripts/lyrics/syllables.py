@@ -129,12 +129,15 @@ def _pick_best(items, extract, title, artist, target_duration):
 
     return best if best is not None and best_score >= 25 else None
 
+def _make_query(title, artist=""):
+    primary = _ARTIST_SPLIT.split(artist)[0].strip() if artist else ""
+    return f"{title} {primary}".strip()
+
 # ==============================================================================
 # Provider 1
 # ==============================================================================
 def fetch_p1(title, artist="", target_duration=0):
-    primary_artist = re.split(r"[,;&/]+", artist)[0].strip() if artist else ""
-    query = f"{title} {primary_artist}".strip()
+    query = _make_query(title, artist)
     if not query:
         return None
 
@@ -509,8 +512,7 @@ def _normalize_qrc(raw_qrc):
     return "\n".join(out)
 
 def fetch_p2(title, artist="", target_duration=0):
-    primary_artist = re.split(r"[,;&/]+", artist)[0].strip() if artist else ""
-    query = f"{title} {primary_artist}".strip()
+    query = _make_query(title, artist)
     if not query:
         return None
 
@@ -617,8 +619,7 @@ def _normalize_p3(raw_lyrics):
     return "\n".join(out)
 
 def fetch_p3(title, artist="", target_duration=0):
-    primary_artist = re.split(r"[,;&/]+", artist)[0].strip() if artist else ""
-    query = f"{title} {primary_artist}".strip()
+    query = _make_query(title, artist)
     if not query:
         return None
 

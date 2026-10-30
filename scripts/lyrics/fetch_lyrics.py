@@ -396,7 +396,7 @@ def run(title, artist, duration, cache_dir, emit):
             _log(f"[ERROR] {name} ({elapsed:.2f}s): {ex}")
             events.put(("word", name, None, 0))
 
-    pending_providers = set(name for name, _ in sy.PROVIDERS)
+    pending_providers = {name for name, _ in sy.PROVIDERS}
     for name, fn in sy.PROVIDERS:
         threading.Thread(target=word_worker, args=(name, fn), daemon=True).start()
         words_pending += 1
@@ -442,23 +442,22 @@ def run(title, artist, duration, cache_dir, emit):
             _, name, text, score = ev
             pending_providers.discard(name)
             if text:
-                if best_word is None:
-                    best_word = (name, text, score)
+                is_initial = best_word is None
+                is_upgrade = not is_initial and score > best_word[2]
+                if is_initial:
                     _log(f"[EMIT] Initial karaoke source: {name} (score: {score})")
-                    emit({"k": "word", "text": text})
-                    if path:
-                        cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": text, "src": name, "lrc": lrc})
-                elif score > best_word[2]:
-                    # Better karaoke match found; upgrade both display and cache
+                elif is_upgrade:
                     old_name, _, old_score = best_word
                     diff = score - old_score
                     _log(f"[UPGRADE] Replaced {old_name} (score: {old_score}) -> BETTER match from {name} (score: {score}, +{diff} pts)")
+                else:
+                    _log(f"[DISCARD] {name} match ignored (score: {score} <= {best_word[0]} score: {best_word[2]})")
+
+                if is_initial or is_upgrade:
                     best_word = (name, text, score)
                     emit({"k": "word", "text": text})
                     if path:
                         cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": text, "src": name, "lrc": lrc})
-                else:
-                    _log(f"[DISCARD] {name} match ignored (score: {score} <= {best_word[0]} score: {best_word[2]})")
             if words_pending == 0 and best_word is not None:
                 if lrc_pending:
                     _log("[DISCARD] lrc: Karaoke found, line search canceled")

@@ -134,8 +134,29 @@ Singleton {
 
 	function updateBestPlayer() {
 		let best = root.getBestPlayer();
-		if (best && best !== root.trackedPlayer) {
+		if (best !== root.trackedPlayer) {
 			root.trackedPlayer = best;
+		}
+	}
+
+	// Watchdog for remote proxy players (e.g. KDE Connect) that don't emit DBus signals
+	// when reaching track end or when the remote app is closed without sending a pause packet.
+	Timer {
+		interval: 1000
+		repeat: true
+		running: root.activePlayer != null && (root.activePlayer.isPlaying || root.activePlayer.playbackState === MprisPlaybackState.Playing)
+		onTriggered: {
+			let p = root.activePlayer;
+			if (!p) return;
+			let dbus = (p.dbusName || "").toLowerCase();
+			if (dbus.includes("kdeconnect")) {
+				let len = p.length || 0;
+				let pos = p.position || 0;
+				if (len > 0 && pos >= (len - 1.0)) {
+					root._playerFilterRevision++;
+					root.updateBestPlayer();
+				}
+			}
 		}
 	}
 
@@ -158,26 +179,12 @@ Singleton {
 				Qt.callLater(root.updateBestPlayer);
 			}
 
-			function onPlaybackStateChanged() {
-				let isKde = (modelData.dbusName || "").toLowerCase().includes("kdeconnect");
-				let len = modelData.length || 0;
-				let pos = modelData.position || 0;
-				let isZombie = isKde && len > 0 && pos >= (len - 1.0);
-
-				if (isZombie) {
-					if (root.players.includes(modelData)) {
-						root._playerFilterRevision++;
-					}
-					if (root.trackedPlayer === modelData) {
-						root.updateBestPlayer();
-					}
-					return;
-				}
-
-				if (!root.players.includes(modelData) && root.isRealPlayer(modelData)) {
+			function evaluateState() {
+				let real = root.isRealPlayer(modelData);
+				let inList = root.players.includes(modelData);
+				if (real !== inList) {
 					root._playerFilterRevision++;
 				}
-
 				if (modelData.isPlaying) {
 					if (!root.trackedPlayer || !root.trackedPlayer.isPlaying || root.getPlayerScore(modelData) >= root.getPlayerScore(root.trackedPlayer)) {
 						root.trackedPlayer = modelData;
@@ -187,62 +194,23 @@ Singleton {
 				}
 			}
 
+			function onPlaybackStateChanged() {
+				evaluateState();
+			}
+
 			function onPostTrackChanged() {
-				let isKde = (modelData.dbusName || "").toLowerCase().includes("kdeconnect");
-				let len = modelData.length || 0;
-				let pos = modelData.position || 0;
-				if (isKde && !(len > 0 && pos >= (len - 1.0))) {
-					if (!root.players.includes(modelData) && root.isRealPlayer(modelData)) {
-						root._playerFilterRevision++;
-					}
-				}
-				if (modelData.isPlaying) {
-					root.trackedPlayer = modelData;
-				}
+				evaluateState();
 			}
 
 			function onTrackTitleChanged() {
-				let isKde = (modelData.dbusName || "").toLowerCase().includes("kdeconnect");
-				let len = modelData.length || 0;
-				let pos = modelData.position || 0;
-				if (isKde && !(len > 0 && pos >= (len - 1.0))) {
-					if (!root.players.includes(modelData) && root.isRealPlayer(modelData)) {
-						root._playerFilterRevision++;
-					}
-				}
-				if (modelData.isPlaying) {
-					root.trackedPlayer = modelData;
-				}
+				evaluateState();
 			}
 
 			function onPositionChanged() {
-				let isKde = (modelData.dbusName || "").toLowerCase().includes("kdeconnect");
 				let len = modelData.length || 0;
 				let pos = modelData.position || 0;
-				let isPlaying = modelData.isPlaying || modelData.playbackState === MprisPlaybackState.Playing;
-
-				if (isKde) {
-					if (len > 0 && pos >= (len - 1.0)) {
-						if (root.players.includes(modelData)) {
-							root._playerFilterRevision++;
-						}
-						if (root.trackedPlayer === modelData) {
-							root.updateBestPlayer();
-						}
-						return;
-					} else if (!root.players.includes(modelData) && root.isRealPlayer(modelData)) {
-						root._playerFilterRevision++;
-					}
-				}
-
-				// If current tracked player has finished its track, check if another active player should take over
-				if (root.trackedPlayer === modelData) {
-					if (len > 0 && pos >= (len - 0.5)) {
-						let best = root.getBestPlayer();
-						if (best && best !== modelData && (best.isPlaying || best.playbackState === MprisPlaybackState.Playing)) {
-							root.trackedPlayer = best;
-						}
-					}
+				if (len > 0 && pos >= (len - 0.5)) {
+					evaluateState();
 				}
 			}
 		}

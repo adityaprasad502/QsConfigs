@@ -13,7 +13,6 @@ import argparse
 from pathlib import Path
 from typing import Dict, Set, List, Tuple
 import tempfile
-import subprocess
 
 class TranslationManager:
     def __init__(self, translations_dir: str, source_dir: str, yes_mode: bool = False):
@@ -313,7 +312,7 @@ def main():
                 print(f"Translation file for language {lang} is already up to date")
                 continue
             
-            print(f"Analysis results:")
+            print("Analysis results:")
             print(f"  Missing keys: {len(missing_keys)}")
             # Load translation file for current lang to get values
             current_translations = manager.load_translation_file(lang)

@@ -85,10 +85,8 @@ def find_least_busy_region(image_path, region_width=300, region_height=200, scre
     y_start = vertical_padding
     x_end = w - region_width - horizontal_padding + 1
     y_end = h - region_height - vertical_padding + 1
-    if x_end < x_start:
-        x_end = x_start
-    if y_end < y_start:
-        y_end = y_start
+    x_end = max(x_end, x_start)
+    y_end = max(y_end, y_start)
     for y in range(y_start, y_end + 1, stride):
         for x in range(x_start, x_end + 1, stride):
             x1, y1 = x, y
@@ -174,10 +172,10 @@ def find_largest_region(image_path, screen_width=None, screen_height=None, verbo
         mid = (min_size + max_size) // 2
         if aspect_ratio >= 1.0:
             region_h = mid
-            region_w = int(round(mid * aspect_ratio))
+            region_w = round(mid * aspect_ratio)
         else:
             region_w = mid
-            region_h = int(round(mid / aspect_ratio if aspect_ratio != 0 else mid))
+            region_h = round(mid / aspect_ratio if aspect_ratio != 0 else mid)
         if region_w <= 0 or region_h <= 0:
             break
         if region_w > effective_w or region_h > effective_h:

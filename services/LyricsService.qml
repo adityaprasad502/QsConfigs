@@ -1683,11 +1683,11 @@ Singleton {
             }
             case root.mOutro: {
                 if (root.trackInfoPlain) {
-                    line = `${root.trackInfoPlain} (Outro)`;
-                    rich = `${root.trackInfoRich} <font color="${timerCol}">(Outro)</font>`;
+                    line = `${root.trackInfoPlain} (Outro ♪)`;
+                    rich = `${root.trackInfoRich} <font color="${timerCol}">(Outro ♪)</font>`;
                 } else {
-                    line = "Outro";
-                    rich = `<font color="${timerCol}">Outro</font>`;
+                    line = "Outro ♪";
+                    rich = `<font color="${timerCol}">Outro ♪</font>`;
                 }
                 dim = rich;
                 lit = rich;

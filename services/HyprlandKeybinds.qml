@@ -1,8 +1,6 @@
 pragma Singleton
 pragma ComponentBehavior: Bound
 
-import qs.modules.common
-import qs.modules.common.functions
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -10,7 +8,7 @@ import Quickshell.Hyprland
 
 /**
  * A service that provides access to Hyprland keybinds.
- * Uses the `get_keybinds.py` script to parse comments in config files in a certain format and convert to JSON.
+ * Uses the `get_keybinds.lua` script to parse comments in config files in a certain format and convert to JSON.
  */
 Singleton {
     id: root
@@ -30,7 +28,7 @@ Singleton {
     Process {
         id: getKeybinds
         running: true
-        command: ["lua", "/home/pu94x/.config/quickshell/ii/scripts/hyprland/get_keybinds.lua"]
+        command: ["lua", Quickshell.shellPath("scripts/hyprland/get_keybinds.lua")]
         
         stdout: StdioCollector {
             onStreamFinished: {

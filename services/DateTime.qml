@@ -11,7 +11,7 @@ import Quickshell.Io
  */
 Singleton {
     property var clock: SystemClock {
-        id: clock
+        id: systemClock
         precision: {
             if (Config.options.time.secondPrecision || GlobalStates.screenLocked)
                 return SystemClock.Seconds;

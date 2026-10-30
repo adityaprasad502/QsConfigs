@@ -6,7 +6,6 @@ import QtQuick
 import QtQuick.Layouts
 import Qt5Compat.GraphicalEffects
 import Quickshell
-import Quickshell.Hyprland
 import Quickshell.Services.Notifications
 
 Item { // Notification item area
@@ -174,7 +173,7 @@ Item { // Notification item area
                     maximumLineCount: 1
                     textFormat: Text.StyledText
                     text: {
-return notificationObject.appName === "KDE Connect" ? "yet another notification" : NotificationUtils.processNotificationBody(notificationObject.body, notificationObject.appName || notificationObject.summary).replace(/\n/g, " · ");
+                        return notificationObject.appName === "KDE Connect" ? "yet another notification" : NotificationUtils.processNotificationBody(notificationObject.body, notificationObject.appName || notificationObject.summary).replace(/\n/g, " · ");
                     }
                 }
             }

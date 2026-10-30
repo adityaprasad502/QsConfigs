@@ -7,10 +7,8 @@ import Qt5Compat.GraphicalEffects
 
 import QtQuick
 import QtQuick.Layouts
-import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Mpris
-import Quickshell.Hyprland
 
 Item {
     id: root
@@ -35,7 +33,7 @@ Item {
     readonly property bool isPlaying: activePlayer?.playbackState === MprisPlaybackState.Playing
     readonly property bool isPaused: activePlayer != null && !root.isPlaying
     readonly property bool hasMedia: activePlayer != null && (root.isPlaying || (StringUtils.cleanMusicTitle(activePlayer?.trackTitle) || "") !== "")
-    readonly property bool hasLyrics: root.hasMedia && ((LyricsService.currentLyricLine && LyricsService.currentLyricLine.length > 0) || LyricsService.lyricLines.length > 0)
+    readonly property bool hasLyrics: root.hasMedia && root.isPlaying && ((LyricsService.currentLyricLine && LyricsService.currentLyricLine.length > 0) || LyricsService.lyricLines.length > 0)
     readonly property bool isLive: {
         if (!activePlayer || !root.hasMedia) return false;
         let len = activePlayer?.length || 0;

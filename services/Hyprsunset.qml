@@ -4,7 +4,6 @@ import QtQuick
 import qs.modules.common
 import Quickshell
 import Quickshell.Io
-import Quickshell.Hyprland
 
 /**
  * Simple hyprsunset service with automatic mode.

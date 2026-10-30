@@ -6,12 +6,11 @@ Used to clean and organize translation files, removing unused keys
 """
 
 import os
-import sys
 import json
 import argparse
 import importlib.util
 from pathlib import Path
-from typing import Dict, Set, List
+from typing import List
 
 # Import from the same directory using importlib
 current_dir = os.path.dirname(os.path.abspath(__file__))
