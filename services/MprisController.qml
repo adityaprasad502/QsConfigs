@@ -42,6 +42,14 @@ Singleton {
 	readonly property bool hasActiveDesktopSpotify: Mpris.players.values.some(
 		p => (p.dbusName || "").toLowerCase().includes("mediaplayer2.spotify")
 	)
+	function isLive(player) {
+		if (!player) return false;
+		let len = player.length || 0;
+		let canSeek = player.canSeek ?? false;
+		let lenSupported = player.lengthSupported ?? true;
+		return !lenSupported || len <= 0 || !canSeek;
+	}
+
 	function isRealPlayer(player) {
         if (!player) return false;
         if (!Config.options.media.filterDuplicatePlayers) {
@@ -77,11 +85,12 @@ Singleton {
             return false;
         }
 
-        // KDE Connect zombie check: if song has reached or exceeded its duration
-        if (isKde) {
+        // End-of-track zombie check: if non-Spotify player (e.g. Chrome, Firefox, KDE Connect) has reached duration
+        let isSpotify = identity.includes("spotify") || dbus.includes("spotify");
+        if (!isSpotify && !root.isLive(player)) {
             let len = player.length || 0;
             let pos = player.position || 0;
-            if (len > 0 && pos >= (len - 1.0)) {
+            if (len > 0 && pos >= (len - 0.5)) {
                 return false;
             }
         }
@@ -118,9 +127,11 @@ Singleton {
 		let bestScore = -99999;
 		for (const player of root.players) {
 			let dbus = (player.dbusName || "").toLowerCase();
+			let identity = (player.identity || "").toLowerCase();
+			let isSpotify = identity.includes("spotify") || dbus.includes("spotify");
 			let len = player.length || 0;
 			let pos = player.position || 0;
-			if (dbus.includes("kdeconnect") && len > 0 && pos >= (len - 1.0)) {
+			if (!isSpotify && !root.isLive(player) && len > 0 && pos >= (len - 0.5)) {
 				continue;
 			}
 			let score = root.getPlayerScore(player);
@@ -139,7 +150,7 @@ Singleton {
 		}
 	}
 
-	// Watchdog for remote proxy players (e.g. KDE Connect) that don't emit DBus signals
+	// Watchdog for players (e.g. browsers, KDE Connect) that don't emit DBus signals
 	// when reaching track end or when the remote app is closed without sending a pause packet.
 	Timer {
 		interval: 1000
@@ -149,10 +160,12 @@ Singleton {
 			let p = root.activePlayer;
 			if (!p) return;
 			let dbus = (p.dbusName || "").toLowerCase();
-			if (dbus.includes("kdeconnect")) {
+			let identity = (p.identity || "").toLowerCase();
+			let isSpotify = identity.includes("spotify") || dbus.includes("spotify");
+			if (!isSpotify && !root.isLive(p)) {
 				let len = p.length || 0;
 				let pos = p.position || 0;
-				if (len > 0 && pos >= (len - 1.0)) {
+				if (len > 0 && pos >= (len - 0.5)) {
 					root._playerFilterRevision++;
 					root.updateBestPlayer();
 				}

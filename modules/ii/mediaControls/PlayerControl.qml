@@ -21,12 +21,7 @@ Item { // Player instance
     property string artFilePath: `${artDownloadLocation}/${artFileName}`
     property color artDominantColor: ColorUtils.mix((colorQuantizer?.colors[0] ?? Appearance.colors.colPrimary), Appearance.colors.colPrimaryContainer, 0.8) || Appearance.m3colors.m3secondaryContainer
     property bool downloaded: false
-    readonly property bool isLive: {
-        if (!root.player) return false;
-        let len = root.player?.length || 0;
-        let canSeek = root.player?.canSeek ?? false;
-        return len <= 0 || !canSeek;
-    }
+    readonly property bool isLive: MprisController.isLive(root.player)
     property list<real> visualizerPoints: []
     property real maxVisualizerValue: 850 // Max value in the data points
     property int visualizerSmoothing: 1 // Number of points to average for smoothing

@@ -948,7 +948,11 @@ Singleton {
     }
 
     function isSupportedPlayer(player) {
-        return !!player;
+        if (!player) return false;
+        let id = (player.identity || "").toLowerCase();
+        let entry = (player.desktopEntry || "").toLowerCase();
+        let bus = (player.dbusName || "").toLowerCase();
+        return id.includes("spotify") || entry.includes("spotify") || bus.includes("spotify");
     }
 
     // ------------------------------------------------------------------------------------------
