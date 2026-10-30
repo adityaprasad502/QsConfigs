@@ -18,6 +18,7 @@ import http.client
 import json
 import os
 import queue
+import random
 import re
 import sys
 import threading
@@ -35,15 +36,15 @@ TTL_WORD = 30 * 86400        # word-synced lyrics cached 30 days (refreshed on r
 TTL_LRC = 7 * 86400          # non-karaoke line-synced lyrics expire after 7 days
 TTL_RETRY_WORD = 48 * 3600   # retry word providers after 48 hours if only line-synced found
 TTL_NONE = 90 * 60           # no lyrics found: re-query after 90 minutes
-CACHE_MAX_BYTES = 5 * 1024 * 1024        # 5 MB hard limit
-CACHE_TARGET_BYTES = int(4.4 * 1024 * 1024)  # prune down to ~4.4 MB
+CACHE_MAX_BYTES = 7 * 1024 * 1024            # 7 MiB hard limit
+CACHE_TARGET_BYTES = 6 * 1024 * 1024          # prune down to 6 MiB
 
 _LRC_HOST = sy._d("6c72636c69622e6e6574")
 # Client identification (decoded at runtime like the other endpoints)
 _LRC_HEADERS = {
-    "User-Agent": sy._d("4c52434c49422057656220436c69656e74202868747470733a2f2f6769746875622e636f6d2f7472616e7875616e7468616e672f6c72636c696229"),
-    sy._d("4c72636c69622d436c69656e74"): sy._d("4c52434c49422057656220436c69656e74202868747470733a2f2f6769746875622e636f6d2f7472616e7875616e7468616e672f6c72636c696229"),
-    sy._d("582d557365722d4167656e74"): sy._d("4c52434c49422057656220436c69656e74202868747470733a2f2f6769746875622e636f6d2f7472616e7875616e7468616e672f6c72636c696229"),
+    "User-Agent": sy._d("446576584f2d4c79726963732f312e30202868747470733a2f2f6769746875622e636f6d2f70753934782f646f74732d687970726c616e6429"),
+    sy._d("4c72636c69622d436c69656e74"): sy._d("446576584f2d4c79726963732f312e30202868747470733a2f2f6769746875622e636f6d2f70753934782f646f74732d687970726c616e6429"),
+    sy._d("582d557365722d4167656e74"): sy._d("446576584f2d4c79726963732f312e30202868747470733a2f2f6769746875622e636f6d2f70753934782f646f74732d687970726c616e6429"),
     "Accept-Encoding": "gzip",
 }
 
@@ -67,6 +68,22 @@ def _file_sz(p):
         return f"{sz / 1024:.1f} KB" if sz >= 1024 else f"{sz} B"
     except Exception:
         return ""
+
+def _format_time_interval(secs):
+    secs = int(round(secs))
+    if secs <= 0:
+        return "0s"
+    h = secs // 3600
+    m = (secs % 3600) // 60
+    s = secs % 60
+    parts = []
+    if h > 0:
+        parts.append(f"{h}h")
+    if m > 0:
+        parts.append(f"{m}m")
+    if s > 0 or not parts:
+        parts.append(f"{s}s")
+    return " ".join(parts)
 
 def _touch(path):
     if not path:
@@ -164,8 +181,8 @@ def _cache_prune(d):
                 pass
 
         if evicted_count > 0:
-            freed_str = f"{evicted_bytes / (1024 * 1024):.1f} MB" if evicted_bytes >= 1024 * 1024 else f"{evicted_bytes / 1024:.0f} KB"
-            curr_str = f"{total_size / (1024 * 1024):.1f} MB" if total_size >= 1024 * 1024 else f"{total_size / 1024:.0f} KB"
+            freed_str = f"{evicted_bytes / 1024:.0f} KB"
+            curr_str = f"{total_size / 1024:.0f} KB"
             _log(f"[PRUNE] Cache: Evicted {evicted_count} tracks (-{freed_str}, down to {curr_str})")
     except Exception:
         pass
@@ -176,35 +193,42 @@ def _cache_prune(d):
 # ------------------------------------------------------------------------------------------------
 def _lrc_json(path):
     """-> (status, parsed_json_or_None); status 0 means transport failure."""
-    for attempt in range(2):
+    for attempt in range(3):
         remaining = sy._deadline - time.monotonic() if sy._deadline else 8.0
-        if remaining < 0.3:
+        if remaining < 0.4:
             return 0, None
-        conn = http.client.HTTPSConnection(_LRC_HOST, timeout=min(8.0, remaining))
+        conn = http.client.HTTPSConnection(_LRC_HOST, timeout=min(6.0, remaining))
         try:
             conn.request("GET", path, headers=_LRC_HEADERS)
             resp = conn.getresponse()
-            if resp.status == 404:
-                return 404, None
-            if resp.status in (429, 503) and attempt == 0 and remaining > 1.2:
-                time.sleep(0.4)
-                continue
+            status = resp.status
+            headers_dict = {k.lower(): v for k, v in resp.getheaders()}
             body = resp.read()
-            if resp.getheader("Content-Encoding") == "gzip":
+            conn.close()
+
+            if status == 404:
+                return 404, None
+            if status in (429, 503) and attempt < 2 and remaining > 1.5:
+                retry_after = headers_dict.get("retry-after")
+                base_wait = float(retry_after) if retry_after and retry_after.isdigit() else 1.2
+                wait = max(1.2, base_wait) + (attempt * 0.6) + random.uniform(0.1, 0.4)
+                if remaining > wait + 0.3:
+                    time.sleep(wait)
+                    continue
+            if headers_dict.get("content-encoding") == "gzip":
                 body = gzip.decompress(body)
-            if resp.status != 200:
-                return resp.status, None
+            if status != 200:
+                return status, None
             return 200, json.loads(body)
         except Exception:
-            if attempt == 0 and remaining > 1.2:
-                time.sleep(0.3)
-                continue
-            return 0, None
-        finally:
             try:
                 conn.close()
             except Exception:
                 pass
+            if attempt < 2 and remaining > 1.5:
+                time.sleep(0.8)
+                continue
+            return 0, None
     return 0, None
 
 def pick_lrc(results, title, artist, duration):
@@ -215,6 +239,7 @@ def pick_lrc(results, title, artist, duration):
         return None
     artist_vars = sy.norm_variants(artist)
     part_vars = [v for v in (sy.norm_variants(a) for a in sy._ARTIST_SPLIT.split(artist or "")) if v]
+    title_lower = title.lower()
 
     best, best_score = None, -9999
     for r in results:
@@ -223,55 +248,65 @@ def pick_lrc(results, title, artist, duration):
         rel = sy._relation(title_vars, sy.norm_variants(r.get("trackName")), 3)
         if rel == 0:
             continue
-        score = 50 if rel == 2 else 25
+        score = 80 if rel == 2 else 35
+
+        # Penalize version mismatches (e.g. live, remix, acoustic, cover when not requested)
+        cand_name_lower = (r.get("trackName") or "").lower()
+        for tag in ("live", "remix", "acoustic", "instrumental", "karaoke", "cover"):
+            if tag in cand_name_lower and tag not in title_lower:
+                score -= 45
 
         if artist_vars:
             cand = sy.norm_variants(r.get("artistName"))
             a_rel = max([sy._relation(artist_vars, cand, 2)] + [sy._relation(p, cand, 2) for p in part_vars])
-            score += {2: 40, 1: 20, 0: 0}[a_rel]
+            score += {2: 70, 1: 35, 0: -60}[a_rel]
 
         d = r.get("duration")
         if duration > 0 and isinstance(d, (int, float)) and d > 0:
             diff = abs(d - duration)
-            if diff <= 2:
+            if diff <= 1.5:
+                score += 50
+            elif diff <= 3.5:
                 score += 35
-            elif diff <= 5:
-                score += 20
-            elif diff > 15:
-                score -= 30
+            elif diff <= 6.0:
+                score += 18
+            elif diff <= 10.0:
+                score += 5
+            elif diff > 15.0:
+                score -= 40 + min(60, int((diff - 15) * 3))
 
         if r.get("syncedLyrics"):
-            score += 10
+            score += 20
         if score > best_score:
             best, best_score = r, score
-    return best if best is not None and best_score >= 25 else None
+
+    min_thresh = 45 if artist_vars else 30
+    return best if best is not None and best_score >= min_thresh else None
 
 def lrc_lookup(title, artist, duration):
-    """-> (result_dict_or_None, definitive, reason). `get` (exact) and `search` run concurrently."""
+    """-> (result_dict_or_None, definitive, reason). Paces requests to prevent 503 ServerOverloaded."""
     primary = sy._ARTIST_SPLIT.split(artist or "")[0].strip()
-    search_path = "/api/search?q=" + urllib.parse.quote(f"{title} {primary}".strip())
-    search_out = {}
 
-    def do_search():
-        search_out["r"] = _lrc_json(search_path)
-
-    st = threading.Thread(target=do_search, daemon=True)
-    st.start()
-
+    # 1. If duration and primary artist are available, try direct exact lookup first
     if duration > 0 and primary:
         get_path = "/api/get?" + urllib.parse.urlencode(
-            {"track_name": title, "artist_name": primary, "duration": duration})
+            {"track_name": title, "artist_name": primary, "duration": int(round(duration))})
         status, data = _lrc_json(get_path)
         if status == 200 and isinstance(data, dict) and (data.get("syncedLyrics") or data.get("plainLyrics")):
             return data, True, ""
+        # Pacing delay between sequential requests to avoid tripping LRCLIB's IP burst limiter
+        time.sleep(0.6)
 
-    st.join(max(0.1, (sy._deadline - time.monotonic()) if sy._deadline else 6.0))
-    status, results = search_out.get("r", (0, None))
+    # 2. Fallback to search query
+    search_path = "/api/search?q=" + urllib.parse.quote(f"{title} {primary}".strip())
+    status, results = _lrc_json(search_path)
+    if status == 200 and isinstance(results, list):
+        return pick_lrc(results, title, artist, duration), True, ""
     if status in (429, 503):
-        return None, False, f"Server error ({status})"
+        return None, False, f"Server busy ({status})"
     if status != 200:
         return None, False, "Connection failure" if status == 0 else f"HTTP {status}"
-    return pick_lrc(results, title, artist, duration), True, ""
+    return None, True, ""
 
 
 # ------------------------------------------------------------------------------------------------
@@ -291,7 +326,7 @@ def run(title, artist, duration, cache_dir, emit):
     ts = entry.get("ts", 0)
     if entry.get("word") and now - ts < TTL_WORD:
         _touch(path)
-        age_str = f"{(now - ts) / 3600:.1f}h ago"
+        age_str = f"{_format_time_interval(now - ts)} ago"
         sz_str = f", {_file_sz(path)}" if _file_sz(path) else ""
         _log(f"[HIT] Karaoke ({entry.get('src', 'cache')}, {age_str}{sz_str}): \"{title}\" - \"{artist}\"")
         emit({"k": "word", "text": entry["word"]})
@@ -311,7 +346,7 @@ def run(title, artist, duration, cache_dir, emit):
             entry = {}
     if entry.get("lrc") and now - ts < TTL_LRC:
         _touch(path)
-        age_str = f"{(now - ts) / 3600:.1f}h ago"
+        age_str = f"{_format_time_interval(now - ts)} ago"
         sz_str = f", {_file_sz(path)}" if _file_sz(path) else ""
         _log(f"[HIT] Line-synced (lrc, {age_str}{sz_str}): \"{title}\" - \"{artist}\"")
         lrc = entry["lrc"]
@@ -320,8 +355,9 @@ def run(title, artist, duration, cache_dir, emit):
         time_since_tried = now - entry.get("word_tried", 0)
         if time_since_tried < TTL_RETRY_WORD:
             rem = max(0, TTL_RETRY_WORD - time_since_tried)
-            rem_str = f"{rem / 3600:.1f}h" if rem >= 3600 else f"{int(rem / 60)}m"
-            _log(f"[COOLDOWN] Song retry cooldown active for \"{title}\" ({rem_str} left)")
+            rem_str = _format_time_interval(rem)
+            passed_str = _format_time_interval(time_since_tried)
+            _log(f"[COOLDOWN] Song retry cooldown active for \"{title}\" (passed: {passed_str}, {rem_str} left)")
             return
     else:
         entry = {}
@@ -355,24 +391,107 @@ def run(title, artist, duration, cache_dir, emit):
         threading.Thread(target=lrc_worker, daemon=True).start()
 
     def _lyric_quality(text, target_dur=0):
+        """Multi-factor lyric quality scoring:
+        Evaluates:
+          1. Word & syllable count with healthy density weighting (diminishing returns).
+          2. Line structure & words-per-line distribution.
+          3. Timeline coverage (first to last lyric vs target duration).
+          4. Duration precision (continuous falloff penalty for drift).
+          5. Monotonicity & timing integrity (no reversed line timestamps).
+          6. Penalties for placeholders ('纯音乐'), snippets, or truncated texts.
+        """
         if not text:
             return 0
-        score = text.count("<") + len(text.splitlines()) * 2
-        if target_dur > 0:
-            times = re.findall(r"\[(\d+),\s*(\d+)\]", text)
-            if times:
-                try:
-                    end_sec = (int(times[-1][0]) + int(times[-1][1])) / 1000.0
-                    diff = abs(end_sec - target_dur)
-                    if diff <= 8:
-                        score += 60   # close duration match to track
-                    elif diff <= 20:
-                        score += 30
-                    elif diff > 45:
-                        score -= 80   # heavily penalize partial snippets / cutoffs
-                except Exception:
-                    pass
-        return score
+
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return 0
+
+        # Reject instrumental / pure music placeholders
+        for bad_phrase in ("纯音乐", "Instrumental", "没有填词", "暂无歌词"):
+            if any(bad_phrase in ln for ln in lines[:3]):
+                return -9999
+
+        word_count = text.count("<")
+        line_count = len(lines)
+
+        # 1. Base Word Score (sweet spot: 120-600 words)
+        # Using diminishing returns so bloated/spam lyrics do not beat a clean studio track
+        if word_count < 15:
+            return -500  # Snippet / intro teaser
+        elif word_count < 50:
+            base_words = word_count * 2.0
+        elif word_count <= 400:
+            base_words = 100.0 + (word_count - 50) * 0.8
+        else:
+            base_words = 380.0 + min(120.0, (word_count - 400) * 0.3)
+
+        # 2. Line Structure & Formatting (clean stanza density)
+        words_per_line = word_count / max(1, line_count)
+        if 3.0 <= words_per_line <= 16.0:
+            structure_bonus = 60.0
+        elif words_per_line < 2.0:
+            structure_bonus = -40.0
+        else:
+            structure_bonus = 20.0
+
+        score = base_words + structure_bonus
+
+        # Parse timestamps: [start_ms, dur_ms]
+        first_time_sec = None
+        last_time_sec = None
+        is_monotonic = True
+        prev_time = -1
+
+        for ln in lines:
+            m = re.match(r"^\[(\d+),\s*(\d+)\]", ln)
+            if m:
+                start_ms, dur_ms = int(m.group(1)), int(m.group(2))
+                st_sec = start_ms / 1000.0
+                end_sec = (start_ms + dur_ms) / 1000.0
+
+                if first_time_sec is None:
+                    first_time_sec = st_sec
+
+                if st_sec < prev_time - 0.5:
+                    is_monotonic = False
+                prev_time = st_sec
+                last_time_sec = end_sec
+
+        # 3. Timing Monotonicity
+        if not is_monotonic:
+            score -= 100.0
+        else:
+            score += 30.0
+
+        # 4. Target Duration Alignment & Coverage
+        if target_dur > 0 and last_time_sec is not None:
+            diff = abs(last_time_sec - target_dur)
+
+            # Smooth, continuous duration match (max +180, steep falloff for >25s)
+            if diff <= 1.5:
+                score += 180.0
+            elif diff <= 4.0:
+                score += 140.0 - (diff - 1.5) * 16.0
+            elif diff <= 10.0:
+                score += 100.0 - (diff - 4.0) * 8.0
+            elif diff <= 25.0:
+                score += 52.0 - (diff - 10.0) * 4.0
+            else:
+                score -= min(300.0, 50.0 + (diff - 25.0) * 8.0)
+
+            # Timeline coverage (span of vocals vs song duration)
+            if first_time_sec is not None and first_time_sec < last_time_sec:
+                span = last_time_sec - first_time_sec
+                coverage = span / target_dur
+                if coverage >= 0.70:
+                    score += 100.0  # Full song coverage
+                elif coverage >= 0.50:
+                    score += 50.0
+                elif coverage < 0.30:
+                    score -= 180.0  # Heavy penalty for short snippet/intro
+
+        return int(round(score))
 
     best_word = None  # (name, text, score)
 
@@ -433,10 +552,11 @@ def run(title, artist, duration, cache_dir, emit):
             if result:
                 lrc = {"synced": result.get("syncedLyrics") or "", "plain": result.get("plainLyrics") or ""}
                 if not best_word:
-                    _log("[EMIT] Using lrc line-synced lyrics (awaiting karaoke...)")
                     emit({"k": "lrc", "synced": lrc["synced"], "plain": lrc["plain"]})
-                    if path:
-                        cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": 0})
+                    if words_pending > 0:
+                        _log("[EMIT] Using lrc line-synced lyrics (awaiting karaoke...)")
+                        if path:
+                            cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": 0})
         else:
             words_pending -= 1
             _, name, text, score = ev

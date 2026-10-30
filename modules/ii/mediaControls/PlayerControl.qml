@@ -424,8 +424,9 @@ Item { // Player instance
                         anchors.rightMargin: 8
                         horizontalAlignment: Text.AlignHCenter
                         font.pixelSize: Appearance.font.pixelSize.small
-                        color: blendedColors.colOnLayer0
-                        opacity: LyricsService.lyricLines.length > 0 ? 0.85 : 0.45
+                        color: LyricsService.lyricLines.length > 0
+                            ? ColorUtils.mix(blendedColors.colOnLayer0, blendedColors.colLayer0, 0.85)
+                            : ColorUtils.mix(blendedColors.colSubtext, blendedColors.colLayer0, 0.45)
                         elide: Text.ElideRight
                         maximumLineCount: 1
                         visible: true

@@ -76,20 +76,24 @@ Singleton {
     property int _slowInterval: 100
     readonly property bool _playing: activePlayer?.playbackState === MprisPlaybackState.Playing
 
-    // Precomputed lyric style colors: reactive to theme/wallpaper changes
-    readonly property string colPastHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.35).toString()
-    readonly property string colUpcomingHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.40).toString()
-    readonly property string colLitHex: ColorUtils.applyAlpha(Appearance?.colors?.colOnLayer1 ?? Appearance?.colors?.colOnLayer0 ?? "#e6e1e1", 0.85).toString()
+    // Precomputed lyric style colors: mixed over layer0 background so HTML <font color="..."> parses standard 6-digit RGB
+    readonly property color _colLitBase: Appearance?.colors?.colOnLayer1 ?? Appearance?.colors?.colOnLayer0 ?? "#e6e1e1"
+    readonly property color _colSubtextBase: Appearance?.colors?.colSubtext ?? "#948f94"
+    readonly property color _colLyricBg: Appearance?.colors?.colLayer0 ?? "#161515"
+
+    readonly property string colPastHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.35).toString()
+    readonly property string colUpcomingHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.40).toString()
+    readonly property string colLitHex: ColorUtils.mix(root._colLitBase, root._colLyricBg, 0.85).toString()
     readonly property string colActiveHex: colLitHex
-    readonly property string colBulletHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.40).toString()
-    readonly property string colTimerHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
-    readonly property string colWaitingGroupHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.60).toString()
-    readonly property string colWaitingSingleHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.75).toString()
+    readonly property string colBulletHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.40).toString()
+    readonly property string colTimerHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.60).toString()
+    readonly property string colWaitingGroupHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.60).toString()
+    readonly property string colWaitingSingleHex: colWaitingGroupHex
 
     // Background vocal styling: softer harmony glow and dimmer upcoming tone (Apple Music style)
-    readonly property string colBgLitHex: ColorUtils.applyAlpha(root.colLitHex, 0.60).toString()
-    readonly property string colBgPastHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.20).toString()
-    readonly property string colBgUpcomingHex: ColorUtils.applyAlpha(Appearance?.colors?.colSubtext ?? "#948f94", 0.25).toString()
+    readonly property string colBgLitHex: ColorUtils.mix(root.colLitHex, root._colLyricBg, 0.60).toString()
+    readonly property string colBgPastHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.20).toString()
+    readonly property string colBgUpcomingHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.25).toString()
 
     // Anything baked into the cached rich-text strings; a change forces a rebuild
     readonly property string displaySig: colPastHex + colUpcomingHex + colLitHex + colBulletHex + colTimerHex

@@ -95,6 +95,7 @@ def _pick_best(items, extract, title, artist, target_duration):
     if not items or not title_vars:
         return None
     artist_vars = [v for v in (norm_variants(a) for a in _ARTIST_SPLIT.split(artist or "")) if v]
+    title_lower = title.lower()
 
     best, best_score = None, -999999
     for item in items:
@@ -106,28 +107,37 @@ def _pick_best(items, extract, title, artist, target_duration):
         rel = _relation(title_vars, norm_variants(name), 3)
         if rel == 0:
             continue
-        score = 50 if rel == 2 else 25
+        score = 80 if rel == 2 else 35
+
+        # Penalize version mismatches (e.g. finding live/remix/cover when studio is requested)
+        name_lower = (name or "").lower()
+        for tag in ("live", "remix", "acoustic", "instrumental", "karaoke", "cover", "伴奏"):
+            if tag in name_lower and tag not in title_lower:
+                score -= 45
 
         if artist_vars:
             s_artist_vars = norm_variants(singers)
             best_rel = max((_relation(av, s_artist_vars, 2) for av in artist_vars), default=0)
-            score += {2: 60, 1: 30, 0: -20}[best_rel]
+            score += {2: 70, 1: 35, 0: -60}[best_rel]
 
         if target_duration > 0 and dur and dur > 0:
             diff = abs(dur - target_duration)
-            if diff <= 1:
-                score += 40
-            elif diff <= 3:
-                score += 20
-            elif diff <= 6:
-                score += 10
-            elif diff > 15:
-                score -= 40
+            if diff <= 1.5:
+                score += 50
+            elif diff <= 3.5:
+                score += 35
+            elif diff <= 6.0:
+                score += 18
+            elif diff <= 10.0:
+                score += 5
+            elif diff > 15.0:
+                score -= 40 + min(60, int((diff - 15) * 3))
 
         if score > best_score:
             best, best_score = item, score
 
-    return best if best is not None and best_score >= 25 else None
+    min_thresh = 45 if artist_vars else 30
+    return best if best is not None and best_score >= min_thresh else None
 
 def _make_query(title, artist=""):
     primary = _ARTIST_SPLIT.split(artist)[0].strip() if artist else ""

@@ -164,32 +164,31 @@ Item {
                 Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
             }
 
-            // Circular progress with play/pause (player active)
-            ClippedFilledCircularProgress {
+            // Circular progress ring with play/pause (player active)
+            CircularProgress {
                 id: mediaCircProg
                 anchors.centerIn: parent
                 visible: root.hasMedia
-                opacity: visible ? 1 : 0
-                lineWidth: Appearance.rounding.unsharpen
+                opacity: visible ? 0.80 : 0
+                lineWidth: 2
                 value: root.isLive ? 1 : (activePlayer?.position / activePlayer?.length)
                 implicitSize: 20
-                colPrimary: Appearance.colors.colSubtext
+                colPrimary: Appearance.colors.colPrimary
+                colSecondary: ColorUtils.transparentize(Appearance.colors.colOutlineVariant, 0.6)
                 enableAnimation: false
+                gapAngle: 0
+                scale: hoverArea.containsMouse ? 1.08 : 1.0
 
+                Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                 Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
 
-                Item {
+                MaterialSymbol {
                     anchors.centerIn: parent
-                    width: mediaCircProg.implicitSize
-                    height: mediaCircProg.implicitSize
-
-                    MaterialSymbol {
-                        anchors.centerIn: parent
-                        fill: 1
-                        text: root.isPlaying ? "pause" : "play_arrow"
-                        iconSize: Appearance.font.pixelSize.normal
-                        color: Appearance.colors.colSubtext
-                    }
+                    anchors.verticalCenterOffset: 1
+                    fill: 1
+                    text: root.isPlaying ? "pause" : "play_arrow"
+                    iconSize: 12
+                    color: Appearance.colors.colOnLayer0
                 }
             }
         }
@@ -280,7 +279,7 @@ Item {
 
                     Item {
                         id: multilineSlideOverlay
-                        visible: root.hasLyrics && !LyricsService.hasWordSync && LyricsService.currentLineProgress > 0
+                        visible: root.hasLyrics && !LyricsService.hasWordSync && LyricsService.isMultiLineGroup && LyricsService.currentLineProgress > 0
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
                         x: Math.round(parent.implicitWidth * LyricsService.activeLineStartFraction)
