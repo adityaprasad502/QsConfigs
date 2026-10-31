@@ -90,10 +90,7 @@ Singleton {
 		if (!player) return false;
 		let key = player.uniqueId || player.dbusName;
 		let ts = root._pauseTimestamps[key];
-		if (!ts) {
-			root._pauseTimestamps[key] = Date.now();
-			return false;
-		}
+		if (!ts) return false;
 		return (Date.now() - ts) > ((maxSeconds || 60) * 1000);
 	}
 
@@ -234,7 +231,7 @@ Singleton {
 				let real = root.isRealPlayer(modelData);
 				let inList = root.players.includes(modelData);
 				if (real !== inList) {
-					root._playerFilterRevision++;
+					Qt.callLater(() => root._playerFilterRevision++);
 				}
 				if (modelData.isPlaying) {
 					if (!root.trackedPlayer || !root.trackedPlayer.isPlaying || root.getPlayerScore(modelData) >= root.getPlayerScore(root.trackedPlayer)) {

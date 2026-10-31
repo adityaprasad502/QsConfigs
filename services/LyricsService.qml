@@ -1564,25 +1564,44 @@ Singleton {
             let hasNext = g.nextStartIdx < lines.length;
             if (hasNext) nextText = groups[g.nextStartIdx].text;
 
-            // Repeat multipliers (x2, x3) only apply to consecutive repeats of a single line
+            // Generalized repeat detection for any unit (single line, pair A•B, triplet A•B•C, etc.)
             let identicalCount = 1;
             let repeatSeriesStart = g.startIdx;
-            if (isSingle && rawText !== "♪") {
-                for (let k = g.endIdx + 1; k < lines.length; k++) {
-                    if (lines[k].text === rawText) identicalCount++;
-                    else break;
+            if (g.text && g.text !== "♪") {
+                // Forward scan across consecutive groups (with max 6.0s natural musical gap)
+                let nextIdx = g.nextStartIdx;
+                let prevEnd = lines[g.endIdx].endTime || (lines[g.endIdx].time + 3.0);
+                while (nextIdx < lines.length) {
+                    let nextGroup = groups[nextIdx];
+                    if (!nextGroup || nextGroup.text !== g.text) break;
+                    let nextStart = lines[nextGroup.startIdx].time;
+                    let silenceGap = nextStart - prevEnd;
+                    if (silenceGap > 6.0) break; // Exclude long interludes / separate song sections
+                    identicalCount++;
+                    prevEnd = lines[nextGroup.endIdx].endTime || (lines[nextGroup.endIdx].time + 3.0);
+                    nextIdx = nextGroup.nextStartIdx;
                 }
-                for (let p = g.startIdx - 1; p >= 0; p--) {
-                    if (lines[p].text === rawText) repeatSeriesStart = p;
-                    else break;
+                // Backward scan across consecutive groups
+                let prevIdx = g.startIdx - 1;
+                let currStart = lines[g.startIdx].time;
+                while (prevIdx >= 0) {
+                    let prevGroup = groups[prevIdx];
+                    if (!prevGroup || prevGroup.text !== g.text) break;
+                    let pEnd = lines[prevGroup.endIdx].endTime || (lines[prevGroup.endIdx].time + 3.0);
+                    let silenceGap = currStart - pEnd;
+                    if (silenceGap > 6.0) break;
+                    repeatSeriesStart = prevGroup.startIdx;
+                    currStart = lines[prevGroup.startIdx].time;
+                    prevIdx = prevGroup.startIdx - 1;
                 }
             }
-            groupKey = isSingle ? repeatSeriesStart : g.startIdx;
 
-            let isLastOfSeries = isSingle
-                && identicalCount === 1
+            let hasRepeatSeries = identicalCount > 1 || (g.startIdx > 0 && groups[g.startIdx - 1].text === g.text);
+            groupKey = hasRepeatSeries ? repeatSeriesStart : g.startIdx;
+
+            let isLastOfSeries = identicalCount === 1
                 && g.startIdx > 0
-                && lines[g.startIdx - 1].text === rawText;
+                && groups[g.startIdx - 1].text === g.text;
             let repeatSuffix = (identicalCount > 1 || isLastOfSeries) ? ` (x${identicalCount})` : "";
             let baseText = g.text + repeatSuffix;
 
@@ -1604,16 +1623,22 @@ Singleton {
                     }
                 }
                 let groupBounds = root._getGroupBounds(g, lines);
+                totalLyricW = g._totalWidth || 0;
                 if (groupBounds && currIdx >= g.startIdx && currIdx <= g.endIdx && started) {
                     let b = groupBounds[currIdx - g.startIdx];
                     startFrac = b.startFrac;
                     endFrac = b.endFrac;
-                    totalLyricW = g._totalWidth || 0;
                 }
                 if (mode === root.mSing) {
                     dim = partsDim.join(bulletSep);
                     lit = partsLit.join(bulletSep);
                     rich = partsRich.join(bulletSep);
+                    if (repeatSuffix.length > 0) {
+                        // Repeat indicators are UI metadata, not sung lyrics — keep out of the lit overlay
+                        let suffixRich = ` <font color="${timerCol}">${repeatSuffix}</font>`;
+                        dim += suffixRich;
+                        rich += suffixRich;
+                    }
                     line = baseText;
                 }
             } else {
