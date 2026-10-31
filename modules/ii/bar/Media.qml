@@ -31,15 +31,7 @@ Item {
 
     // State helpers
     readonly property bool isLive: MprisController.isLive(activePlayer)
-    readonly property bool isFinished: {
-        if (!activePlayer || root.isLive) return false;
-        let dbus = (activePlayer.dbusName || "").toLowerCase();
-        let identity = (activePlayer.identity || "").toLowerCase();
-        if (identity.includes("spotify") || dbus.includes("spotify")) return false;
-        let len = activePlayer.length || 0;
-        let pos = activePlayer.position || 0;
-        return len > 0 && pos >= (len - 0.5);
-    }
+    readonly property bool isFinished: MprisController.isFinished(activePlayer)
     readonly property bool isPlaying: activePlayer?.playbackState === MprisPlaybackState.Playing && !root.isFinished
     readonly property bool isPaused: activePlayer != null && !root.isPlaying && !root.isFinished
     readonly property bool hasMedia: activePlayer != null && !root.isFinished && (root.isPlaying || (StringUtils.cleanMusicTitle(activePlayer?.trackTitle) || "") !== "")

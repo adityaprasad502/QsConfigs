@@ -18,12 +18,13 @@ import qs.modules.common.functions
 Singleton {
 	id: root;
 	property int _playerFilterRevision: 0;
+	property var _pauseTimestamps: ({});
 	property list<MprisPlayer> players: {
 		_playerFilterRevision;
 		return Mpris.players.values.filter(player => isRealPlayer(player));
 	}
 	property MprisPlayer trackedPlayer: null;
-	property MprisPlayer activePlayer: trackedPlayer ?? root.players[0] ?? null;
+	property MprisPlayer activePlayer: (trackedPlayer && isRealPlayer(trackedPlayer)) ? trackedPlayer : (root.players[0] ?? null);
 	signal trackChanged(reverse: bool);
 
 	onPlayersChanged: Qt.callLater(root.updateBestPlayer);
@@ -50,53 +51,95 @@ Singleton {
 		return !lenSupported || len <= 0 || !canSeek;
 	}
 
+	function isKdeConnectPlayer(player) {
+		return !!player && (player.dbusName || "").toLowerCase().includes("kdeconnect");
+	}
+
+	function isBrowserPlayer(player) {
+		if (!player) return false;
+		let dbus = (player.dbusName || "").toLowerCase();
+		let identity = (player.identity || "").toLowerCase();
+		return dbus.includes("chromium") || dbus.includes("chrome") || dbus.includes("firefox")
+			|| dbus.includes("brave") || dbus.includes("edge") || dbus.includes("vivaldi")
+			|| dbus.includes("plasma-browser-integration")
+			|| identity.includes("chrome") || identity.includes("firefox") || identity.includes("chromium")
+			|| identity.includes("brave") || identity.includes("web browser");
+	}
+
+	function isNativeSpotifyPlayer(player) {
+		if (!player) return false;
+		let dbus = (player.dbusName || "").toLowerCase();
+		let identity = (player.identity || "").toLowerCase();
+		return (dbus.includes("mediaplayer2.spotify") || identity === "spotify") && !root.isKdeConnectPlayer(player);
+	}
+
+	function isFinished(player) {
+		if (!player || root.isLive(player)) return false;
+		if (root.isNativeSpotifyPlayer(player)) return false;
+		let len = player.length || 0;
+		let pos = player.position || 0;
+		if (len > 0 && pos >= (len - 0.5)) return true;
+		let isKde = root.isKdeConnectPlayer(player);
+		let isBrowser = root.isBrowserPlayer(player);
+		let isPlaying = player.isPlaying || player.playbackState === MprisPlaybackState.Playing;
+		if ((isKde || isBrowser) && !isPlaying && pos <= 0.5) return true;
+		return false;
+	}
+
+	function _isPausedStale(player, maxSeconds) {
+		if (!player) return false;
+		let key = player.uniqueId || player.dbusName;
+		let ts = root._pauseTimestamps[key];
+		if (!ts) {
+			root._pauseTimestamps[key] = Date.now();
+			return false;
+		}
+		return (Date.now() - ts) > ((maxSeconds || 60) * 1000);
+	}
+
 	function isRealPlayer(player) {
-        if (!player) return false;
-        if (!Config.options.media.filterDuplicatePlayers) {
-            return true;
-        }
+		if (!player) return false;
+		if (!Config.options.media.filterDuplicatePlayers) {
+			return true;
+		}
 
-        let dbus = (player.dbusName || "").toLowerCase();
-        let isKde = dbus.includes("kdeconnect");
-        let identity = (player.identity || "").toLowerCase();
+		let dbus = (player.dbusName || "").toLowerCase();
+		let identity = (player.identity || "").toLowerCase();
+		let isKde = root.isKdeConnectPlayer(player);
+		let isBrowser = root.isBrowserPlayer(player);
 
-        if (hasActivePlasmaIntegration && (dbus.startsWith('org.mpris.mediaplayer2.firefox') || dbus.startsWith('org.mpris.mediaplayer2.chromium'))) {
-            return false;
-        }
+		if (hasActivePlasmaIntegration && (dbus.startsWith('org.mpris.mediaplayer2.firefox') || dbus.startsWith('org.mpris.mediaplayer2.chromium'))) {
+			return false;
+		}
 
-        if (dbus.startsWith('org.mpris.mediaplayer2.playerctld')) {
-            return false;
-        }
+		if (dbus.startsWith('org.mpris.mediaplayer2.playerctld') || (dbus.endsWith('.mpd') && !dbus.endsWith('mediaplayer2.mpd'))) {
+			return false;
+		}
 
-        if (dbus.endsWith('.mpd') && !dbus.endsWith('mediaplayer2.mpd')) {
-            return false;
-        }
+		let title = (player.trackTitle || "").trim().toLowerCase();
+		let artist = (player.trackArtist || "").trim();
+		let isPlaying = player.isPlaying || player.playbackState === MprisPlaybackState.Playing;
 
-        let title = (player.trackTitle || "").trim().toLowerCase();
-        let artist = (player.trackArtist || "").trim();
-        let isPlaying = player.isPlaying || player.playbackState === MprisPlaybackState.Playing;
+		if (!isPlaying && (title === "" || title === "untitled") && artist === "") {
+			return false;
+		}
 
-        // If native desktop Spotify is running, ignore KDE Connect mirroring Spotify or stale paused sessions
-        if (isKde && hasActiveDesktopSpotify && (identity.includes("spotify") || !isPlaying)) {
-            return false;
-        }
+		if (isKde && hasActiveDesktopSpotify && identity.includes("spotify")) {
+			return false;
+		}
 
-        if (!isPlaying && (title === "" || title === "untitled") && artist === "") {
-            return false;
-        }
+		// Evict finished tracks or unstarted idle sessions
+		if (root.isFinished(player)) {
+			return false;
+		}
 
-        // End-of-track zombie check: if non-Spotify player (e.g. Chrome, Firefox, KDE Connect) has reached duration
-        let isSpotify = identity.includes("spotify") || dbus.includes("spotify");
-        if (!isSpotify && !root.isLive(player)) {
-            let len = player.length || 0;
-            let pos = player.position || 0;
-            if (len > 0 && pos >= (len - 0.5)) {
-                return false;
-            }
-        }
+		// Evict transient players paused mid-track for too long
+		if ((isKde || isBrowser) && !isPlaying && root._isPausedStale(player, 60)) {
+			return false;
+		}
 
-        return true;
-    }
+		return true;
+	}
 
 	function getPlayerScore(p) {
 		if (!p) return -9999;
@@ -126,12 +169,7 @@ Singleton {
 		let best = null;
 		let bestScore = -99999;
 		for (const player of root.players) {
-			let dbus = (player.dbusName || "").toLowerCase();
-			let identity = (player.identity || "").toLowerCase();
-			let isSpotify = identity.includes("spotify") || dbus.includes("spotify");
-			let len = player.length || 0;
-			let pos = player.position || 0;
-			if (!isSpotify && !root.isLive(player) && len > 0 && pos >= (len - 0.5)) {
+			if (!root.isRealPlayer(player)) {
 				continue;
 			}
 			let score = root.getPlayerScore(player);
@@ -155,20 +193,13 @@ Singleton {
 	Timer {
 		interval: 1000
 		repeat: true
-		running: root.activePlayer != null && (root.activePlayer.isPlaying || root.activePlayer.playbackState === MprisPlaybackState.Playing)
+		running: root.activePlayer != null
 		onTriggered: {
 			let p = root.activePlayer;
 			if (!p) return;
-			let dbus = (p.dbusName || "").toLowerCase();
-			let identity = (p.identity || "").toLowerCase();
-			let isSpotify = identity.includes("spotify") || dbus.includes("spotify");
-			if (!isSpotify && !root.isLive(p)) {
-				let len = p.length || 0;
-				let pos = p.position || 0;
-				if (len > 0 && pos >= (len - 0.5)) {
-					root._playerFilterRevision++;
-					root.updateBestPlayer();
-				}
+			if (!root.isRealPlayer(p)) {
+				root._playerFilterRevision++;
+				root.updateBestPlayer();
 			}
 		}
 	}
@@ -193,6 +224,13 @@ Singleton {
 			}
 
 			function evaluateState() {
+				let key = modelData.uniqueId || modelData.dbusName;
+				let isPlaying = modelData.isPlaying || modelData.playbackState === MprisPlaybackState.Playing;
+				if (isPlaying) {
+					delete root._pauseTimestamps[key];
+				} else if (!root._pauseTimestamps[key]) {
+					root._pauseTimestamps[key] = Date.now();
+				}
 				let real = root.isRealPlayer(modelData);
 				let inList = root.players.includes(modelData);
 				if (real !== inList) {
