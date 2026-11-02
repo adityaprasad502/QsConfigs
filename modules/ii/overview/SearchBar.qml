@@ -106,6 +106,19 @@ RowLayout {
         Layout.bottomMargin: 4
         onClicked: {
             GlobalStates.overviewOpen = false;
+            GlobalStates.appGridOpen = true;
+        }
+        text: "apps"
+        StyledToolTip {
+            text: Translation.tr("All Applications")
+        }
+    }
+
+    IconToolbarButton {
+        Layout.topMargin: 4
+        Layout.bottomMargin: 4
+        onClicked: {
+            GlobalStates.overviewOpen = false;
             Quickshell.execDetached(["qs", "-p", Quickshell.shellPath(""), "ipc", "call", "region", "search"]);
         }
         text: "image_search"

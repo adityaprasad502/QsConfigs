@@ -68,6 +68,7 @@ Singleton {
     property int _nvTemp: 0
     property int _nvPollTick: 0
     property string fanSpeedString: "---"
+    property string fanSpeedTitle: Translation.tr("Fan Speed")
     property int fanSpeedRPM: 0
     property int fan1RPM: 0
     property int fan2RPM: 0
@@ -275,13 +276,22 @@ Singleton {
         root.fan1RPM = f1
         root.fan2RPM = f2
         if (fileFan1.path !== "" && fileFan2.path !== "") {
-            root.fanSpeedString = `${f1} / ${f2} RPM`
+            if (f1 === f2) {
+                root.fanSpeedString = `${f1} RPM`
+                root.fanSpeedTitle = Translation.tr("Fan Speed")
+            } else {
+                root.fanSpeedString = `${f1} / ${f2} RPM`
+                root.fanSpeedTitle = Translation.tr("Fans (CPU / GPU)")
+            }
         } else if (f1 > 0 || f2 > 0) {
             root.fanSpeedString = `${Math.max(f1, f2)} RPM`
+            root.fanSpeedTitle = Translation.tr("Fan Speed")
         } else if (fileFan1.path !== "" || fileFan2.path !== "") {
             root.fanSpeedString = "0 RPM"
+            root.fanSpeedTitle = Translation.tr("Fan Speed")
         } else {
             root.fanSpeedString = "---"
+            root.fanSpeedTitle = Translation.tr("Fan Speed")
         }
     }
 

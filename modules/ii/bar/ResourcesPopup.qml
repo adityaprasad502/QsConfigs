@@ -61,7 +61,7 @@ StyledPopup {
             }
             StatCard {
                 symbol: "mode_fan"
-                title: Translation.tr("Fans (CPU / GPU)")
+                title: ResourceUsage.fanSpeedTitle
                 value: ResourceUsage.fanSpeedString
             }
 

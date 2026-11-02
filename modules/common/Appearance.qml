@@ -401,8 +401,8 @@ Singleton {
         property real mediaControlsHeight: 160
         property real notificationPopupWidth: 410
         property real osdWidth: 180
-        property real searchWidthCollapsed: 210
-        property real searchWidth: 360
+        property real searchWidthCollapsed: 340
+        property real searchWidth: 520
         property real sidebarWidth: 460
         property real sidebarWidthExtended: 750
         property real baseVerticalBarWidth: 46

@@ -2,6 +2,7 @@ import qs.modules.common
 import qs.services
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import Quickshell.Hyprland
 pragma Singleton
 pragma ComponentBehavior: Bound
@@ -9,6 +10,7 @@ pragma ComponentBehavior: Bound
 Singleton {
     id: root
     property bool barOpen: true
+    property bool appGridOpen: false
     property real topBarMediaWidth: 440
     property bool crosshairOpen: false
     property bool sidebarLeftOpen: false
@@ -47,6 +49,29 @@ Singleton {
         }
         onReleased: {
             root.superDown = false
+        }
+    }
+
+    GlobalShortcut {
+        name: "appGridToggle"
+        description: "Toggle application grid"
+
+        onPressed: {
+            root.appGridOpen = !root.appGridOpen
+        }
+    }
+
+    IpcHandler {
+        target: "appGrid"
+
+        function toggle(): void {
+            root.appGridOpen = !root.appGridOpen
+        }
+        function open(): void {
+            root.appGridOpen = true
+        }
+        function close(): void {
+            root.appGridOpen = false
         }
     }
 
