@@ -112,6 +112,8 @@ Item { // Wrapper
         implicitHeight: columnLayout.implicitHeight
         radius: searchBar.height / 2 + searchBar.verticalPadding
         color: Appearance.colors.colBackgroundSurfaceContainer
+        border.width: 1
+        border.color: Appearance.colors.colLayer0Border
 
         Behavior on implicitHeight {
             id: searchHeightBehavior

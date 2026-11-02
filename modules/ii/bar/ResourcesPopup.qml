@@ -29,7 +29,7 @@ StyledPopup {
             columnSpacing: 5
             uniformCellWidths: true
 
-            // RAM
+            // RAM & Swap
             StatCard {
                 symbol: "clock_loader_60"
                 title: Translation.tr("RAM Used")
@@ -41,34 +41,33 @@ StyledPopup {
                 value: root.formatKB(ResourceUsage.memoryFree)
             }
             StatCard {
-                symbol: "empty_dashboard"
-                title: Translation.tr("RAM Total")
-                value: root.formatKB(ResourceUsage.memoryTotal)
-            }
-
-            // Swap
-            StatCard {
-                visible: ResourceUsage.swapTotal > 0
-                symbol: "clock_loader_60"
-                title: Translation.tr("Swap Used")
-                value: root.formatKB(ResourceUsage.swapUsed)
-            }
-            StatCard {
                 visible: ResourceUsage.swapTotal > 0
                 symbol: "check_circle"
                 title: Translation.tr("Swap Free")
                 value: root.formatKB(ResourceUsage.swapFree)
+                Layout.columnSpan: 1
+            }
+
+            // GPU & Cooling
+            StatCard {
+                symbol: "developer_board"
+                title: ResourceUsage.gpuActiveName.length > 0 ? Translation.tr("GPU (%1)").arg(ResourceUsage.gpuActiveName) : Translation.tr("GPU Load")
+                value: ResourceUsage.gpuUsageString
             }
             StatCard {
-                visible: ResourceUsage.swapTotal > 0
-                symbol: "empty_dashboard"
-                title: Translation.tr("Swap Total")
-                value: root.formatKB(ResourceUsage.swapTotal)
+                symbol: "thermostat"
+                title: Translation.tr("GPU Temp")
+                value: ResourceUsage.gpuTempString
+            }
+            StatCard {
+                symbol: "mode_fan"
+                title: Translation.tr("Fans (CPU / GPU)")
+                value: ResourceUsage.fanSpeedString
             }
 
             // CPU
             StatCard {
-                symbol: "bolt"
+                symbol: "planner_review"
                 title: Translation.tr("CPU Load")
                 value: `${Math.round(ResourceUsage.cpuUsage * 100)}%`
             }

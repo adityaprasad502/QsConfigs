@@ -55,6 +55,23 @@ Singleton {
     property string cpuTempString: "---"
     property string cpuCurrentFreqString: "---"
 
+    // Power & GPU telemetry
+    property string systemPowerTitle: Translation.tr("Power Draw")
+    property string systemPowerIcon: "bolt"
+    property string systemPowerString: "---"
+    property real systemPowerWatts: 0
+    property string gpuUsageString: "---"
+    property string gpuTempString: "---"
+    property string gpuActiveName: "AMD"
+    property real gpuUsage: 0
+    property int _nvUsagePercent: 0
+    property int _nvTemp: 0
+    property int _nvPollTick: 0
+    property string fanSpeedString: "---"
+    property int fanSpeedRPM: 0
+    property int fan1RPM: 0
+    property int fan2RPM: 0
+
     readonly property int historyLength: Config?.options.resources.historyLength ?? 60
     property list<real> cpuUsageHistory: []
     property list<real> memoryUsageHistory: []
@@ -101,6 +118,15 @@ Singleton {
             if (fileCpuTemp.path !== "") {
                 fileCpuTemp.reload()
             }
+            if (filePowerBat.path !== "") filePowerBat.reload()
+            if (filePowerBatStatus.path !== "") filePowerBatStatus.reload()
+            if (filePowerHwmon.path !== "") filePowerHwmon.reload()
+            if (fileGpuLoad.path !== "") fileGpuLoad.reload()
+            if (fileGpuTemp.path !== "") fileGpuTemp.reload()
+            if (fileFan1.path !== "") fileFan1.reload()
+            if (fileFan2.path !== "") fileFan2.reload()
+            if (fileNvidiaStatus.path !== "") fileNvidiaStatus.reload()
+            root.updateHardwareStats()
 
             // Parse memory and swap usage
             const textMeminfo = fileMeminfo.text()
@@ -171,23 +197,158 @@ Singleton {
         }
     }
 
+    function updateHardwareStats() {
+        let batVal = parseInt(filePowerBat.text()) || 0
+        let batStatus = filePowerBatStatus.text().trim()
+        let hwmonVal = parseInt(filePowerHwmon.text()) || 0
+
+        if (batStatus === "Charging" && batVal > 0) {
+            let w = batVal / 1000000
+            root.systemPowerWatts = w
+            root.systemPowerString = w.toFixed(1) + " W"
+            root.systemPowerTitle = Translation.tr("Charge Rate")
+            root.systemPowerIcon = "battery_charging_full"
+        } else if (batStatus === "Discharging" && batVal > 0) {
+            let w = batVal / 1000000
+            root.systemPowerWatts = w
+            root.systemPowerString = w.toFixed(1) + " W"
+            root.systemPowerTitle = Translation.tr("Power Draw")
+            root.systemPowerIcon = "bolt"
+        } else if (hwmonVal > 0) {
+            let w = hwmonVal / 1000000
+            root.systemPowerWatts = w
+            root.systemPowerString = w.toFixed(1) + " W"
+            root.systemPowerTitle = Translation.tr("SoC Power")
+            root.systemPowerIcon = "memory"
+        } else {
+            root.systemPowerWatts = 0
+            root.systemPowerString = "---"
+            root.systemPowerTitle = Translation.tr("Power Draw")
+            root.systemPowerIcon = "bolt"
+        }
+
+        // GPU load & active card
+        let amdVal = parseInt(fileGpuLoad.text())
+        let amdUsage = (!isNaN(amdVal) && amdVal >= 0) ? Math.min(1.0, amdVal / 100.0) : 0
+        let amdString = (!isNaN(amdVal) && amdVal >= 0) ? Math.round(amdVal) + "%" : "---"
+
+        let nvStatus = fileNvidiaStatus.text().trim()
+        let isNvActive = (nvStatus === "active")
+        if (isNvActive) {
+            // Poll nvidia-smi every 5th tick (~5-15s) so the GPU can idle and autosuspend if unused
+            if (++root._nvPollTick % 5 === 0 && !nvQueryProc.running) {
+                nvQueryProc.running = true
+            }
+            // If NVIDIA has active compute/render workload (> 0%), showcase NVIDIA;
+            // Otherwise show AMD since it is actively driving the display and desktop.
+            if (root._nvUsagePercent > 0) {
+                root.gpuActiveName = "NVIDIA"
+                root.gpuUsage = root._nvUsagePercent / 100.0
+                root.gpuUsageString = root._nvUsagePercent + "%"
+            } else {
+                root.gpuActiveName = "AMD"
+                root.gpuUsage = amdUsage
+                root.gpuUsageString = amdString
+            }
+        } else {
+            root._nvPollTick = 0
+            root._nvUsagePercent = 0
+            root.gpuActiveName = "AMD"
+            root.gpuUsage = amdUsage
+            root.gpuUsageString = amdString
+        }
+
+        // GPU temperature
+        let amdTempRaw = parseInt(fileGpuTemp.text())
+        let amdTemp = (!isNaN(amdTempRaw) && amdTempRaw > 0) ? (amdTempRaw / 1000).toFixed(1) + "°C" : "---"
+        if (root.gpuActiveName === "NVIDIA" && root._nvTemp > 0) {
+            root.gpuTempString = root._nvTemp + "°C"
+        } else if (amdTemp !== "---") {
+            root.gpuTempString = amdTemp
+        } else {
+            root.gpuTempString = "---"
+        }
+
+        // Fan speeds
+        let f1 = parseInt(fileFan1.text()) || 0
+        let f2 = parseInt(fileFan2.text()) || 0
+        root.fan1RPM = f1
+        root.fan2RPM = f2
+        if (fileFan1.path !== "" && fileFan2.path !== "") {
+            root.fanSpeedString = `${f1} / ${f2} RPM`
+        } else if (f1 > 0 || f2 > 0) {
+            root.fanSpeedString = `${Math.max(f1, f2)} RPM`
+        } else if (fileFan1.path !== "" || fileFan2.path !== "") {
+            root.fanSpeedString = "0 RPM"
+        } else {
+            root.fanSpeedString = "---"
+        }
+    }
+
     Process {
-        id: findTempPathProc
+        id: findHardwarePathsProc
         environment: ({
             LANG: "C",
             LC_ALL: "C"
         })
-        command: ["bash", "-c", "grep \"\" /sys/class/hwmon/hwmon*/name 2>/dev/null | awk -F: '/k10temp|coretemp/ {print $1}' | head -n 1 | sed 's/name/temp1_input/'"]
+        command: ["python3", Quickshell.shellPath("scripts/hardware-paths.py")]
         running: true
         stdout: StdioCollector {
             onStreamFinished: {
-                if (text.trim().length > 0) {
-                    fileCpuTemp.path = text.trim()
-                    fileCpuTemp.reload()
+                try {
+                    let d = JSON.parse(text.trim())
+                    if (d.cpuTemp) { fileCpuTemp.path = d.cpuTemp; fileCpuTemp.reload(); }
+                    if (d.powerBat) { filePowerBat.path = d.powerBat; filePowerBat.reload(); }
+                    if (d.powerBatStatus) { filePowerBatStatus.path = d.powerBatStatus; filePowerBatStatus.reload(); }
+                    if (d.powerHwmon) { filePowerHwmon.path = d.powerHwmon; filePowerHwmon.reload(); }
+                    if (d.gpuLoad) { fileGpuLoad.path = d.gpuLoad; fileGpuLoad.reload(); }
+                    if (d.gpuTemp) { fileGpuTemp.path = d.gpuTemp; fileGpuTemp.reload(); }
+                    if (d.fanInputs && d.fanInputs.length > 0) {
+                        fileFan1.path = d.fanInputs[0]; fileFan1.reload();
+                        if (d.fanInputs.length > 1) { fileFan2.path = d.fanInputs[1]; fileFan2.reload(); }
+                    }
+                    if (d.nvidiaStatus) { fileNvidiaStatus.path = d.nvidiaStatus; fileNvidiaStatus.reload(); }
+                    root.updateHardwareStats()
+                } catch(e) {}
+            }
+        }
+    }
+
+    Process {
+        id: nvQueryProc
+        command: ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let parts = text.trim().split(",")
+                let val = parseInt(parts[0])
+                let temp = parts.length > 1 ? parseInt(parts[1]) : 0
+                root._nvUsagePercent = (!isNaN(val) && val >= 0) ? Math.round(val) : 0
+                root._nvTemp = (!isNaN(temp) && temp > 0) ? temp : 0
+                if (root._nvUsagePercent > 0) {
+                    root.gpuActiveName = "NVIDIA"
+                    root.gpuUsage = Math.min(1.0, root._nvUsagePercent / 100.0)
+                    root.gpuUsageString = root._nvUsagePercent + "%"
+                    if (root._nvTemp > 0) root.gpuTempString = root._nvTemp + "°C"
+                } else {
+                    root.gpuActiveName = "AMD"
+                    let amdVal = parseInt(fileGpuLoad.text())
+                    if (!isNaN(amdVal) && amdVal >= 0) {
+                        root.gpuUsage = Math.min(1.0, amdVal / 100.0)
+                        root.gpuUsageString = Math.round(amdVal) + "%"
+                    }
                 }
             }
         }
     }
+
+    FileView { id: filePowerBat; path: "" }
+    FileView { id: filePowerBatStatus; path: "" }
+    FileView { id: filePowerHwmon; path: "" }
+    FileView { id: fileGpuLoad; path: "" }
+    FileView { id: fileGpuTemp; path: "" }
+    FileView { id: fileFan1; path: "" }
+    FileView { id: fileFan2; path: "" }
+    FileView { id: fileNvidiaStatus; path: "" }
 
     FileView {
         id: fileCpuTemp
