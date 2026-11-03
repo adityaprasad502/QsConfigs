@@ -87,6 +87,120 @@ Scope {
         }
     }
 
+    // Dynamic Updates map: package-name -> { old: "version", new: "version" }
+    property var appUpdatesMap: ({})
+    property var _pendingUpdatesMap: ({})
+    property double lastUpdateCheckTime: 0
+
+    readonly property int updatableAppsCount: {
+        const apps = Array.from(DesktopEntries.applications.values);
+        let count = 0;
+        const seenPkgs = new Set();
+        for (let i = 0; i < apps.length; i++) {
+            const app = apps[i];
+            if (!app || app.noDisplay) continue;
+            const pkgName = root.getAppPackage(app);
+            if (pkgName && root.appUpdatesMap[pkgName] && !seenPkgs.has(pkgName)) {
+                seenPkgs.add(pkgName);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    function forceCheckUpdates() {
+        if (!appUpdatesProc.running) {
+            root._pendingUpdatesMap = ({});
+            appUpdatesProc.running = true;
+        }
+    }
+
+    Connections {
+        target: GlobalStates
+        function onAppGridRefreshUpdatesRequested() {
+            root.forceCheckUpdates();
+        }
+    }
+
+    Process {
+        id: appUpdatesProc
+        running: true
+        command: [
+            "python3", "-c",
+            "import subprocess\n" +
+            "updates = {}\n" +
+            "try:\n" +
+            "    p1 = subprocess.run(['checkupdates'], capture_output=True, text=True, timeout=15)\n" +
+            "    for line in p1.stdout.strip().splitlines():\n" +
+            "        parts = line.split()\n" +
+            "        if len(parts) >= 4:\n" +
+            "            updates[parts[0]] = {'old': parts[1], 'new': parts[3]}\n" +
+            "except Exception:\n" +
+            "    pass\n" +
+            "try:\n" +
+            "    p2 = subprocess.run(['yay', '-Qum'], capture_output=True, text=True, timeout=15)\n" +
+            "    for line in p2.stdout.strip().splitlines():\n" +
+            "        parts = line.split()\n" +
+            "        if len(parts) >= 4:\n" +
+            "            updates[parts[0]] = {'old': parts[1], 'new': parts[3]}\n" +
+            "except Exception:\n" +
+            "    pass\n" +
+            "for k, v in updates.items():\n" +
+            "    print(f'{k}\\t{v[\"old\"]}\\t{v[\"new\"]}')\n"
+        ]
+
+        onRunningChanged: {
+            if (running) {
+                root._pendingUpdatesMap = ({});
+            }
+        }
+
+        stdout: SplitParser {
+            splitMarker: "\n"
+            onRead: data => {
+                if (!data) return;
+                const lines = data.trim().split("\n");
+                const map = Object.assign({}, root._pendingUpdatesMap);
+                for (const line of lines) {
+                    const parts = line.trim().split("\t");
+                    if (parts.length >= 3) {
+                        map[parts[0]] = { old: parts[1], new: parts[2] };
+                    }
+                }
+                root._pendingUpdatesMap = map;
+            }
+        }
+
+        onExited: (exitCode, exitStatus) => {
+            root.appUpdatesMap = root._pendingUpdatesMap;
+            root.lastUpdateCheckTime = Date.now();
+        }
+    }
+
+    Timer {
+        interval: 60 * 60 * 1000 // Re-check hourly
+        repeat: true
+        running: true
+        onTriggered: {
+            root.forceCheckUpdates();
+        }
+    }
+
+    function checkUpdatesIfNeeded() {
+        if (!appUpdatesProc.running && (Date.now() - root.lastUpdateCheckTime > 15 * 60 * 1000)) {
+            root.forceCheckUpdates();
+        }
+    }
+
+    function getAppUpdate(entry) {
+        if (!entry) return null;
+        const rawId = entry.id || "";
+        const cleanId = rawId.replace(/\.desktop$/, "");
+        const pkgName = root.getAppPackage(entry);
+        if (!pkgName) return null;
+        return root.appUpdatesMap[pkgName] || null;
+    }
+
     function launchApp(entry, forceTerminal = false) {
         if (!entry) return;
         GlobalStates.appGridOpen = false;
@@ -108,12 +222,13 @@ Scope {
         if (cmd.includes("flatpak") || id.includes("flatpak")) return "Flatpak";
         if (cmd.includes(".appimage") || id.includes("appimage")) return "AppImage";
         if (cmd.includes("snap") || id.includes("snap")) return "Snap";
-        if (root.localDesktopIds.has(rawId) || root.localDesktopIds.has(cleanId) || root.localDesktopIds.has(rawId + ".desktop")) return "Local";
 
         const pkgInfo = root.appPackageMap[rawId] || root.appPackageMap[cleanId] || root.appPackageMap[rawId + ".desktop"];
         if (pkgInfo && pkgInfo.source) {
             return pkgInfo.source; // "AUR" or "Pacman"
         }
+
+        if (root.localDesktopIds.has(rawId) || root.localDesktopIds.has(cleanId) || root.localDesktopIds.has(rawId + ".desktop")) return "Local";
 
         // Unowned desktop entry installed manually via terminal/CLI (e.g. Omen Space)
         return "kitty";
@@ -188,6 +303,11 @@ Scope {
     Loader {
         id: drawerLoader
         active: GlobalStates.appGridOpen
+        onActiveChanged: {
+            if (active) {
+                root.checkUpdatesIfNeeded();
+            }
+        }
 
         sourceComponent: PanelWindow {
             id: panelWindow
@@ -274,7 +394,7 @@ Scope {
             Item {
                 id: mainCard
                 anchors.centerIn: parent
-                width: Math.min(940, parent.width - 48)
+                width: Math.min(1040, parent.width - 48)
                 height: Math.min(680, parent.height - 80)
                 property var activeApp: null
                 property var contextApp: null
@@ -549,15 +669,26 @@ Scope {
                             Layout.alignment: Qt.AlignHCenter
                             spacing: 8
 
-                            readonly property var categoryList: [
-                                { name: Translation.tr("All"), icon: "apps", keys: [] },
-                                { name: Translation.tr("Favorites"), icon: "push_pin", keys: [], isPinned: true },
-                                { name: Translation.tr("Productivity"), icon: "work", keys: ["Office", "Development", "Education", "TextEditor"] },
-                                { name: Translation.tr("Internet"), icon: "language", keys: ["Network", "WebBrowser", "Email", "Chat", "Feed"] },
-                                { name: Translation.tr("Media"), icon: "palette", keys: ["AudioVideo", "Audio", "Video", "Graphics", "Music", "Player"] },
-                                { name: Translation.tr("Utilities"), icon: "build", keys: ["Utility", "System", "Settings", "FileManager", "TerminalEmulator", "Archiving"] },
-                                { name: Translation.tr("Games"), icon: "sports_esports", keys: ["Game"] }
-                            ]
+                            readonly property var categoryList: {
+                                const list = [
+                                    { name: Translation.tr("All"), icon: "apps", keys: [] },
+                                    { name: Translation.tr("Favorites"), icon: "push_pin", keys: [], isPinned: true },
+                                    { name: Translation.tr("Productivity"), icon: "work", keys: ["Office", "Development", "Education", "TextEditor"] },
+                                    { name: Translation.tr("Internet"), icon: "language", keys: ["Network", "WebBrowser", "Email", "Chat", "Feed"] },
+                                    { name: Translation.tr("Media"), icon: "palette", keys: ["AudioVideo", "Audio", "Video", "Graphics", "Music", "Player"] },
+                                    { name: Translation.tr("Utilities"), icon: "build", keys: ["Utility", "System", "Settings", "FileManager", "TerminalEmulator", "Archiving"] },
+                                    { name: Translation.tr("Games"), icon: "sports_esports", keys: ["Game"] }
+                                ];
+                                list.push({
+                                    name: root.updatableAppsCount > 0
+                                        ? Translation.tr("Updates (%1)").arg(root.updatableAppsCount)
+                                        : Translation.tr("Updates"),
+                                    icon: "upgrade",
+                                    isUpdates: true,
+                                    keys: []
+                                });
+                                return list;
+                            }
                             property int activeCategoryIndex: 0
 
                             Repeater {
@@ -611,9 +742,13 @@ Scope {
                                     }
 
                                     onClicked: {
-                                        categoriesRow.activeCategoryIndex = index;
-                                        searchInput.text = "";
-                                        searchInput.forceActiveFocus();
+                                        if (categoriesRow.activeCategoryIndex === index && modelData.isUpdates) {
+                                            root.forceCheckUpdates();
+                                        } else {
+                                            categoriesRow.activeCategoryIndex = index;
+                                            searchInput.text = "";
+                                            searchInput.forceActiveFocus();
+                                        }
                                     }
                                 }
                             }
@@ -666,6 +801,66 @@ Scope {
                                     color: sortBtn.hovered ? Appearance.colors.colPrimary : Appearance.colors.colOnLayer0
                                 }
                             }
+
+                            // Refresh button on the categories control bar when on the Updates tab
+                            RippleButton {
+                                id: updateRefreshBtn
+                                readonly property bool isUpdatesTab: {
+                                    const cat = categoriesRow.categoryList[categoriesRow.activeCategoryIndex];
+                                    return !!(cat && cat.isUpdates);
+                                }
+                                visible: isUpdatesTab
+                                Layout.preferredWidth: visible ? 32 : 0
+                                Layout.preferredHeight: visible ? 32 : 0
+                                implicitHeight: 32
+                                implicitWidth: 32
+                                buttonRadius: Appearance.rounding.full
+                                colBackground: ColorUtils.transparentize(Appearance.colors.colLayer1, 0.08)
+                                colBackgroundHover: Appearance.colors.colLayer1Hover
+                                colRipple: Appearance.colors.colLayer1Active
+
+                                onClicked: root.forceCheckUpdates()
+
+                                StyledToolTip {
+                                    text: appUpdatesProc.running ? Translation.tr("Checking for updates...") : Translation.tr("Check for updates")
+                                }
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: updateRefreshBtn.buttonRadius
+                                    color: "transparent"
+                                    border.width: 1
+                                    border.color: (updateRefreshBtn.hovered || appUpdatesProc.running) ? Appearance.colors.colPrimary : Appearance.m3colors.m3outlineVariant
+                                    opacity: (updateRefreshBtn.hovered || appUpdatesProc.running) ? 1.0 : 0.6
+                                    z: 10
+
+                                    Behavior on opacity {
+                                        NumberAnimation { duration: 120; easing.type: Easing.OutQuad }
+                                    }
+                                }
+
+                                MaterialSymbol {
+                                    anchors.centerIn: parent
+                                    text: "refresh"
+                                    iconSize: Appearance.font.pixelSize.small
+                                    renderType: Text.QtRendering
+                                    antialiasing: true
+                                    layer.enabled: appUpdatesProc.running
+                                    layer.smooth: true
+                                    color: (updateRefreshBtn.hovered || appUpdatesProc.running) ? Appearance.colors.colPrimary : Appearance.colors.colOnLayer0
+
+                                    property real spinAngle: 0
+                                    rotation: appUpdatesProc.running ? spinAngle : 0
+
+                                    NumberAnimation on spinAngle {
+                                        from: 0
+                                        to: 360
+                                        duration: 900
+                                        loops: Animation.Infinite
+                                        running: appUpdatesProc.running
+                                    }
+                                }
+                            }
                         }
 
                         // ================= APP GRID =================
@@ -695,6 +890,8 @@ Scope {
                                     // Pinned Favorites filter
                                     if (activeCat && activeCat.isPinned) {
                                         if (!LauncherApps.isPinned(app.id)) return false;
+                                    } else if (activeCat && activeCat.isUpdates) {
+                                        if (!root.getAppUpdate(app)) return false;
                                     } else if (activeCat && activeCat.keys && activeCat.keys.length > 0) {
                                         const appCats = app.categories || [];
                                         const hasCat = appCats.some(c => activeCat.keys.includes(c));
@@ -712,6 +909,17 @@ Scope {
                                     }
                                     return true;
                                 });
+                            }
+
+                            onFilteredAppsChanged: {
+                                if (filteredApps && filteredApps.length > 0) {
+                                    if (!mainCard.activeApp || !filteredApps.some(a => a.id === mainCard.activeApp.id)) {
+                                        mainCard.activeApp = filteredApps[0];
+                                        gridView.currentIndex = 0;
+                                    }
+                                } else {
+                                    mainCard.activeApp = null;
+                                }
                             }
 
                             // Dynamic available unique letters for quick alphabet navigation
@@ -750,7 +958,7 @@ Scope {
                                 anchors.top: parent.top
                                 anchors.bottom: parent.bottom
                                 anchors.right: alphabetBar.visible ? alphabetBar.left : parent.right
-                                anchors.rightMargin: alphabetBar.visible ? 4 : 0
+                                anchors.rightMargin: alphabetBar.visible ? 10 : 0
                                 anchors.topMargin: 4
                                 anchors.bottomMargin: 4
                                 cellWidth: Math.floor(width / Math.max(1, Math.floor(width / 115)))
@@ -764,8 +972,11 @@ Scope {
                                 ScrollBar.vertical: StyledScrollBar {}
 
                                 onCurrentIndexChanged: {
-                                    if (gridView.activeFocus && gridView.currentIndex >= 0 && gridView.currentIndex < gridArea.filteredApps.length) {
-                                        mainCard.activeApp = gridArea.filteredApps[gridView.currentIndex];
+                                    if (gridView.currentIndex >= 0 && gridView.currentIndex < gridArea.filteredApps.length) {
+                                        const nextApp = gridArea.filteredApps[gridView.currentIndex];
+                                        if (mainCard.activeApp !== nextApp) {
+                                            mainCard.activeApp = nextApp;
+                                        }
                                     }
                                 }
                                 onActiveFocusChanged: {
@@ -900,8 +1111,8 @@ Scope {
                                         }
 
                                         HoverHandler {
-                                            onPointChanged: {
-                                                if (hovered && mainCard.contextApp == null && gridView.currentIndex !== appItem.index) {
+                                            onHoveredChanged: {
+                                                if (hovered && mainCard.contextApp == null && mainCard.activeApp !== appItem.modelData) {
                                                     gridView.currentIndex = appItem.index;
                                                     mainCard.activeApp = appItem.modelData;
                                                 }
@@ -923,11 +1134,9 @@ Scope {
                                             }
 
                                             onHoveredChanged: {
-                                                if (hovered && mainCard.contextApp == null) {
+                                                if (hovered && mainCard.contextApp == null && mainCard.activeApp !== appItem.modelData) {
                                                     gridView.currentIndex = appItem.index;
                                                     mainCard.activeApp = appItem.modelData;
-                                                } else if (mainCard.activeApp === appItem.modelData && !appItem.isContextTarget && !gridView.activeFocus) {
-                                                    mainCard.activeApp = null;
                                                 }
                                             }
 
@@ -997,6 +1206,7 @@ Scope {
 
                                             // Pinned Favorite Indicator Badge
                                             MaterialSymbol {
+                                                id: pinBadge
                                                 anchors.top: parent.top
                                                 anchors.right: parent.right
                                                 anchors.margins: 6
@@ -1004,6 +1214,30 @@ Scope {
                                                 text: "push_pin"
                                                 iconSize: 12
                                                 color: Appearance.colors.colPrimary
+                                                z: 11
+                                            }
+
+                                            // Pending Update Indicator Badge
+                                            Rectangle {
+                                                anchors.top: parent.top
+                                                anchors.right: appItem.isPinned ? pinBadge.left : parent.right
+                                                anchors.rightMargin: appItem.isPinned ? 4 : 6
+                                                anchors.topMargin: 6
+                                                width: 18
+                                                height: 18
+                                                radius: 4
+                                                color: Appearance.colors.colLayer1
+                                                border.width: 1
+                                                border.color: Appearance.m3colors.m3outlineVariant
+                                                visible: root.getAppUpdate(appItem.modelData) != null
+                                                z: 11
+
+                                                MaterialSymbol {
+                                                    anchors.centerIn: parent
+                                                    text: "arrow_upward"
+                                                    iconSize: 11
+                                                    color: Appearance.colors.colPrimary
+                                                }
                                             }
 
                                             ColumnLayout {
@@ -1080,25 +1314,46 @@ Scope {
 
                             // Empty State Placeholder with Reset Button
                             Item {
+                                id: emptyStatePlaceholder
                                 anchors.centerIn: parent
                                 visible: gridArea.filteredApps.length === 0
-                                width: 260
+                                width: 280
                                 height: 160
+
+                                readonly property bool isUpdatesCategory: categoriesRow.categoryList[categoriesRow.activeCategoryIndex]?.isUpdates ?? false
 
                                 ColumnLayout {
                                     anchors.centerIn: parent
                                     spacing: 12
 
                                     MaterialSymbol {
+                                        id: emptyStateSymbol
                                         Layout.alignment: Qt.AlignHCenter
-                                        text: "search_off"
-                                        iconSize: 42
-                                        color: Appearance.colors.colOutline
+                                        text: emptyStatePlaceholder.isUpdatesCategory ? (appUpdatesProc.running ? "refresh" : "check_circle") : "search_off"
+                                        iconSize: 44
+                                        renderType: Text.QtRendering
+                                        antialiasing: true
+                                        layer.enabled: emptyStatePlaceholder.isUpdatesCategory && appUpdatesProc.running
+                                        layer.smooth: true
+                                        color: emptyStatePlaceholder.isUpdatesCategory ? Appearance.colors.colPrimary : Appearance.colors.colOutline
+
+                                        property real spinAngle: 0
+                                        rotation: (emptyStatePlaceholder.isUpdatesCategory && appUpdatesProc.running) ? spinAngle : 0
+
+                                        NumberAnimation on spinAngle {
+                                            from: 0
+                                            to: 360
+                                            duration: 900
+                                            loops: Animation.Infinite
+                                            running: emptyStatePlaceholder.isUpdatesCategory && appUpdatesProc.running
+                                        }
                                     }
 
                                     StyledText {
                                         Layout.alignment: Qt.AlignHCenter
-                                        text: Translation.tr("No applications found")
+                                        text: emptyStatePlaceholder.isUpdatesCategory
+                                            ? (appUpdatesProc.running ? Translation.tr("Checking for updates...") : Translation.tr("All applications up to date!"))
+                                            : Translation.tr("No applications found")
                                         font.pixelSize: Appearance.font.pixelSize.normal
                                         font.weight: Font.DemiBold
                                         color: Appearance.colors.colOnLayer0
@@ -1107,13 +1362,14 @@ Scope {
                                     RippleButton {
                                         Layout.alignment: Qt.AlignHCenter
                                         implicitHeight: 32
-                                        implicitWidth: 120
+                                        implicitWidth: emptyBtnLayout.implicitWidth + 24
                                         buttonRadius: Appearance.rounding.full
                                         colBackground: Appearance.colors.colSecondaryContainer
                                         colBackgroundHover: Appearance.colors.colSecondaryContainerHover
                                         colRipple: Appearance.colors.colSecondaryContainerActive
 
                                         RowLayout {
+                                            id: emptyBtnLayout
                                             anchors.centerIn: parent
                                             spacing: 6
                                             MaterialSymbol {
@@ -1122,16 +1378,22 @@ Scope {
                                                 color: Appearance.colors.colOnSecondaryContainer
                                             }
                                             StyledText {
-                                                text: Translation.tr("Reset filters")
+                                                text: parent.parent.parent.parent.isUpdatesCategory
+                                                    ? Translation.tr("Check for updates")
+                                                    : Translation.tr("Reset filters")
                                                 font.pixelSize: Appearance.font.pixelSize.smaller
                                                 color: Appearance.colors.colOnSecondaryContainer
                                             }
                                         }
 
                                         onClicked: {
-                                            searchInput.text = "";
-                                            categoriesRow.activeCategoryIndex = 0;
-                                            searchInput.forceActiveFocus();
+                                            if (parent.parent.isUpdatesCategory) {
+                                                root.forceCheckUpdates();
+                                            } else {
+                                                searchInput.text = "";
+                                                categoriesRow.activeCategoryIndex = 0;
+                                                searchInput.forceActiveFocus();
+                                            }
                                         }
                                     }
                                 }
@@ -1272,173 +1534,250 @@ Scope {
                                 }
                                 return cats;
                             }
-                            color: descriptionBar.displayedApp ? ColorUtils.transparentize(Appearance.colors.colLayer1, 0.08) : "transparent"
+                            color: ColorUtils.transparentize(Appearance.colors.colLayer1, 0.08)
+                            border.width: 1
+                            border.color: Appearance.m3colors.m3outlineVariant
                             clip: true
 
-                            Behavior on color {
-                                animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
-                            }
-
                             // Active App: Two-row spacious layout
-                            ColumnLayout {
+                            Item {
+                                id: appDetailsWrapper
                                 anchors.fill: parent
                                 anchors.leftMargin: 14
                                 anchors.rightMargin: 14
                                 anchors.topMargin: 6
                                 anchors.bottomMargin: 6
-                                spacing: 4
-                                visible: descriptionBar.displayedApp != null
+                                opacity: descriptionBar.displayedApp != null ? 1.0 : 0.0
+                                visible: opacity > 0
 
-                                // Row 1: App Identity, Tag Chips, and Options Hint
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 8
+                                Behavior on opacity {
+                                    NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+                                }
 
-                                    MaterialSymbol {
-                                        text: mainCard.contextApp != null ? "list_alt" : "info"
-                                        iconSize: 16
-                                        color: Appearance.colors.colPrimary
-                                    }
+                                ColumnLayout {
+                                    id: appDetailsContent
+                                    anchors.fill: parent
+                                    spacing: 4
 
-                                    StyledText {
-                                        text: descriptionBar.displayedApp?.name ?? ""
-                                        font.pixelSize: Appearance.font.pixelSize.smallie
-                                        font.weight: Font.DemiBold
-                                        color: Appearance.colors.colOnLayer0
-                                        elide: Text.ElideRight
-                                        Layout.maximumWidth: 300
-                                    }
-
-                                    // App Tag Pills
+                                    // Row 1: App Identity, Tag Chips, and Options Hint
                                     RowLayout {
-                                        spacing: 5
+                                        Layout.fillWidth: true
+                                        spacing: 8
 
-                                        // Source Tag (Pacman / AUR / Terminal / Local / Flatpak / AppImage)
-                                        Rectangle {
+                                        // Mini App Icon or Status Symbol
+                                        Item {
+                                            implicitWidth: 18
                                             implicitHeight: 18
-                                            implicitWidth: sourceRow.implicitWidth + 12
-                                            radius: Appearance.rounding.full
-                                            color: Appearance.colors.colLayer2
-                                            border.width: 1
-                                            border.color: Appearance.m3colors.m3outlineVariant
+                                            Layout.alignment: Qt.AlignVCenter
 
-                                            RowLayout {
-                                                id: sourceRow
+                                            readonly property string resolvedIcon: root.resolveAppIcon(descriptionBar.displayedApp)
+                                            readonly property bool hasValidIcon: resolvedIcon.length > 0 && statusAppIcon.status !== Image.Error
+
+                                            IconImage {
+                                                id: statusAppIcon
+                                                anchors.fill: parent
+                                                source: parent.resolvedIcon
+                                                visible: parent.hasValidIcon
+                                            }
+
+                                            MaterialSymbol {
                                                 anchors.centerIn: parent
-                                                spacing: 4
+                                                visible: !parent.hasValidIcon
+                                                text: mainCard.contextApp != null ? "list_alt" : "info"
+                                                iconSize: 16
+                                                color: Appearance.colors.colPrimary
+                                            }
+                                        }
 
-                                                MaterialSymbol {
-                                                    visible: descriptionBar.appSource === "kitty" || descriptionBar.appSource === "Local"
-                                                    text: descriptionBar.appSource === "kitty" ? "terminal" : "folder"
-                                                    iconSize: 11
-                                                    color: descriptionBar.appSource === "kitty" ? Appearance.colors.colPrimary : Appearance.colors.colOutline
-                                                }
+                                        StyledText {
+                                            id: appTitleText
+                                            text: descriptionBar.displayedApp?.name ?? ""
+                                            font.pixelSize: Appearance.font.pixelSize.smallie
+                                            font.weight: Font.DemiBold
+                                            color: Appearance.colors.colOnLayer0
+                                            elide: Text.ElideRight
+                                            Layout.maximumWidth: 300
+                                        }
 
-                                                StyledText {
-                                                    id: sourceLabel
-                                                    text: descriptionBar.appSource
-                                                    font.pixelSize: Appearance.font.pixelSize.smaller
-                                                    font.weight: Font.DemiBold
-                                                    color: {
-                                                        switch (descriptionBar.appSource) {
-                                                            case "Pacman": return Appearance.colors.colPrimary;
-                                                            case "AUR": return Appearance.colors.colPrimary;
-                                                            case "Flatpak": return Appearance.colors.colSecondary;
-                                                            case "AppImage": return Appearance.colors.colTertiary;
-                                                            case "kitty": return Appearance.colors.colPrimary;
-                                                            default: return Appearance.colors.colOutline;
+                                        // App Tag Pills
+                                        RowLayout {
+                                            spacing: 5
+
+                                            // Source Tag (Pacman / AUR / kitty / Local / Flatpak / AppImage)
+                                            Rectangle {
+                                                visible: descriptionBar.appSource.length > 0
+                                                implicitHeight: 18
+                                                implicitWidth: sourceRow.implicitWidth + 12
+                                                radius: Appearance.rounding.full
+                                                color: Appearance.colors.colLayer2
+                                                border.width: 1
+                                                border.color: Appearance.m3colors.m3outlineVariant
+
+                                                RowLayout {
+                                                    id: sourceRow
+                                                    anchors.centerIn: parent
+                                                    spacing: 4
+
+                                                    MaterialSymbol {
+                                                        visible: descriptionBar.appSource === "kitty" || descriptionBar.appSource === "Local"
+                                                        text: descriptionBar.appSource === "kitty" ? "terminal" : "folder"
+                                                        iconSize: 11
+                                                        color: descriptionBar.appSource === "kitty" ? Appearance.colors.colPrimary : Appearance.colors.colOutline
+                                                    }
+
+                                                    StyledText {
+                                                        id: sourceLabel
+                                                        text: descriptionBar.appSource
+                                                        font.pixelSize: Appearance.font.pixelSize.smaller
+                                                        font.weight: Font.DemiBold
+                                                        color: {
+                                                            switch (descriptionBar.appSource) {
+                                                                case "Pacman": return Appearance.colors.colPrimary;
+                                                                case "AUR": return Appearance.colors.colPrimary;
+                                                                case "Flatpak": return Appearance.colors.colSecondary;
+                                                                case "AppImage": return Appearance.colors.colTertiary;
+                                                                case "kitty": return Appearance.colors.colPrimary;
+                                                                default: return Appearance.colors.colOutline;
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
-                                        }
 
-                                        // Terminal Run Tag (if app.runInTerminal)
-                                        Rectangle {
-                                            visible: !!descriptionBar.displayedApp?.runInTerminal
-                                            implicitHeight: 18
-                                            implicitWidth: termRow.implicitWidth + 8
-                                            radius: Appearance.rounding.full
-                                            color: Appearance.colors.colLayer2
-                                            border.width: 1
-                                            border.color: Appearance.m3colors.m3outlineVariant
+                                            // Pending Update Tag (if update available)
+                                            Rectangle {
+                                                readonly property var updateInfo: root.getAppUpdate(descriptionBar.displayedApp)
+                                                visible: updateInfo != null
+                                                implicitHeight: 18
+                                                implicitWidth: updateRow.implicitWidth + 12
+                                                radius: Appearance.rounding.full
+                                                color: Appearance.colors.colLayer2
+                                                border.width: 1
+                                                border.color: Appearance.m3colors.m3outlineVariant
 
-                                            RowLayout {
-                                                id: termRow
-                                                anchors.centerIn: parent
-                                                spacing: 3
-                                                MaterialSymbol {
-                                                    text: "terminal"
-                                                    iconSize: 11
-                                                    color: Appearance.colors.colPrimary
-                                                }
-                                                StyledText {
-                                                    text: Translation.tr("TUI")
-                                                    font.pixelSize: Appearance.font.pixelSize.smaller
-                                                    font.weight: Font.DemiBold
-                                                    color: Appearance.colors.colOutline
+                                                RowLayout {
+                                                    id: updateRow
+                                                    anchors.centerIn: parent
+                                                    spacing: 4
+
+                                                    MaterialSymbol {
+                                                        text: "arrow_upward"
+                                                        iconSize: 11
+                                                        color: Appearance.colors.colPrimary
+                                                    }
+
+                                                    StyledText {
+                                                        text: parent.parent.updateInfo ? `${parent.parent.updateInfo.old} → ${parent.parent.updateInfo.new}` : ""
+                                                        font.pixelSize: Appearance.font.pixelSize.smaller
+                                                        font.weight: Font.DemiBold
+                                                        color: Appearance.colors.colPrimary
+                                                    }
                                                 }
                                             }
-                                        }
 
-                                        // Category Tags (up to 2)
-                                        Repeater {
-                                            model: descriptionBar.appCategories
-                                            delegate: Rectangle {
-                                                required property string modelData
+                                            // Terminal Run Tag (if app.runInTerminal)
+                                            Rectangle {
+                                                visible: !!descriptionBar.displayedApp?.runInTerminal
                                                 implicitHeight: 18
-                                                implicitWidth: catLabel.implicitWidth + 10
+                                                implicitWidth: termRow.implicitWidth + 8
+                                                radius: Appearance.rounding.full
+                                                color: Appearance.colors.colLayer2
+                                                border.width: 1
+                                                border.color: Appearance.m3colors.m3outlineVariant
+
+                                                RowLayout {
+                                                    id: termRow
+                                                    anchors.centerIn: parent
+                                                    spacing: 3
+                                                    MaterialSymbol {
+                                                        text: "terminal"
+                                                        iconSize: 11
+                                                        color: Appearance.colors.colPrimary
+                                                    }
+                                                    StyledText {
+                                                        text: Translation.tr("TUI")
+                                                        font.pixelSize: Appearance.font.pixelSize.smaller
+                                                        font.weight: Font.DemiBold
+                                                        color: Appearance.colors.colOutline
+                                                    }
+                                                }
+                                            }
+
+                                            // Category Tag 1 (Static, instant without Repeater recreate)
+                                            Rectangle {
+                                                visible: descriptionBar.appCategories.length > 0
+                                                implicitHeight: 18
+                                                implicitWidth: catLabel1.implicitWidth + 10
                                                 radius: Appearance.rounding.full
                                                 color: Appearance.colors.colLayer2
                                                 border.width: 1
                                                 border.color: Appearance.m3colors.m3outlineVariant
 
                                                 StyledText {
-                                                    id: catLabel
+                                                    id: catLabel1
                                                     anchors.centerIn: parent
-                                                    text: modelData
+                                                    text: descriptionBar.appCategories.length > 0 ? descriptionBar.appCategories[0] : ""
+                                                    font.pixelSize: Appearance.font.pixelSize.smaller
+                                                    color: Appearance.colors.colOutline
+                                                }
+                                            }
+
+                                            // Category Tag 2 (Static, instant without Repeater recreate)
+                                            Rectangle {
+                                                visible: descriptionBar.appCategories.length > 1
+                                                implicitHeight: 18
+                                                implicitWidth: catLabel2.implicitWidth + 10
+                                                radius: Appearance.rounding.full
+                                                color: Appearance.colors.colLayer2
+                                                border.width: 1
+                                                border.color: Appearance.m3colors.m3outlineVariant
+
+                                                StyledText {
+                                                    id: catLabel2
+                                                    anchors.centerIn: parent
+                                                    text: descriptionBar.appCategories.length > 1 ? descriptionBar.appCategories[1] : ""
                                                     font.pixelSize: Appearance.font.pixelSize.smaller
                                                     color: Appearance.colors.colOutline
                                                 }
                                             }
                                         }
+
+                                        Item { Layout.fillWidth: true }
+
+                                        // Interactive Hint Tag (Right-aligned)
+                                        RowLayout {
+                                            spacing: 4
+
+                                            MaterialSymbol {
+                                                text: mainCard.contextApp != null ? "menu_open" : "mouse"
+                                                iconSize: 13
+                                                color: Appearance.colors.colOutline
+                                            }
+
+                                            StyledText {
+                                                text: mainCard.contextApp != null ? Translation.tr("Options open (↑↓ navigate, ↵ execute)") : Translation.tr("Right-click or Menu key for options")
+                                                font.pixelSize: Appearance.font.pixelSize.smaller
+                                                color: Appearance.colors.colOutline
+                                            }
+                                        }
                                     }
 
-                                    Item { Layout.fillWidth: true }
-
-                                    // Interactive Hint Tag (Right-aligned)
-                                    RowLayout {
-                                        spacing: 4
-
-                                        MaterialSymbol {
-                                            text: mainCard.contextApp != null ? "menu_open" : "mouse"
-                                            iconSize: 13
-                                            color: Appearance.colors.colOutline
-                                        }
+                                    // Row 2: Full width description
+                                    Item {
+                                        Layout.fillWidth: true
+                                        implicitHeight: descText.implicitHeight
 
                                         StyledText {
-                                            text: mainCard.contextApp != null ? Translation.tr("Options open (↑↓ navigate, ↵ execute)") : Translation.tr("Right-click or Menu key for options")
+                                            id: descText
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.leftMargin: 26
+                                            text: descriptionBar.displayedApp?.comment || descriptionBar.displayedApp?.genericName || Translation.tr("No description available")
                                             font.pixelSize: Appearance.font.pixelSize.smaller
                                             color: Appearance.colors.colOutline
+                                            elide: Text.ElideRight
+                                            opacity: 0.85
                                         }
-                                    }
-                                }
-
-                                // Row 2: Full width description
-                                Item {
-                                    Layout.fillWidth: true
-                                    implicitHeight: descText.implicitHeight
-
-                                    StyledText {
-                                        id: descText
-                                        anchors.left: parent.left
-                                        anchors.right: parent.right
-                                        anchors.leftMargin: 24
-                                        text: descriptionBar.displayedApp?.comment || descriptionBar.displayedApp?.genericName || Translation.tr("No description available")
-                                        font.pixelSize: Appearance.font.pixelSize.smaller
-                                        color: Appearance.colors.colOutline
-                                        elide: Text.ElideRight
-                                        opacity: 0.85
                                     }
                                 }
                             }
@@ -1448,8 +1787,13 @@ Scope {
                                 anchors.fill: parent
                                 anchors.leftMargin: 14
                                 anchors.rightMargin: 14
-                                visible: !descriptionBar.displayedApp
+                                opacity: !descriptionBar.displayedApp ? 1.0 : 0.0
+                                visible: opacity > 0
                                 spacing: 8
+
+                                Behavior on opacity {
+                                    NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+                                }
 
                                 MaterialSymbol {
                                     text: "info"
@@ -1592,6 +1936,44 @@ Scope {
                                     }
                                 });
                             }
+                        }
+
+                        const updateInfo = root.getAppUpdate(app);
+                        const rawId = app.id || "";
+                        const cleanId = rawId.replace(/\.desktop$/, "");
+                        const pkgName = root.getAppPackage(app);
+                        const appName = (app.name || cleanId).replace(/"/g, '\\"');
+                        const safePkg = pkgName ? pkgName.replace(/"/g, '\\"') : "";
+
+                        if (safePkg.length > 0 && root.getAppSource(app) !== "kitty" && root.getAppSource(app) !== "Local") {
+                            actions.push({
+                                iconText: updateInfo ? "upgrade" : "system_update_alt",
+                                label: updateInfo
+                                    ? Translation.tr("Update in Kitty (%1 → %2)").arg(updateInfo.old).arg(updateInfo.new)
+                                    : Translation.tr("Update / Reinstall in Kitty"),
+                                trigger: () => {
+                                    GlobalStates.appGridOpen = false;
+                                    mainCard.contextApp = null;
+                                    Quickshell.execDetached([
+                                        "bash", "-c",
+                                        `kitty -1 --hold=no bash -c '` +
+                                        `echo "========================================"; ` +
+                                        `echo "  ${updateInfo ? "Update" : "Reinstall"} Application: ${appName}"; ` +
+                                        `echo "  Package: ${safePkg}"; ` +
+                                        (updateInfo ? `echo "  Version: ${updateInfo.old} → ${updateInfo.new}"; ` : ``) +
+                                        `echo "========================================"; ` +
+                                        `echo ""; ` +
+                                        `if command -v yay >/dev/null 2>&1; then ` +
+                                        `  yay -S --noconfirm --cleanmenu=false --diffmenu=false --answerclean None --answerdiff None "${safePkg}"; ` +
+                                        `else ` +
+                                        `  sudo pacman -S --noconfirm "${safePkg}"; ` +
+                                        `fi; ` +
+                                        `qs -c ii ipc call appGrid refreshUpdates 2>/dev/null || true; ` +
+                                        `echo ""; ` +
+                                        `read -n 1 -s -r -p "Press any key to close this terminal..."' ; `
+                                    ]);
+                                }
+                            });
                         }
 
                         actions.push({

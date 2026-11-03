@@ -61,6 +61,8 @@ Singleton {
         }
     }
 
+    signal appGridRefreshUpdatesRequested()
+
     IpcHandler {
         target: "appGrid"
 
@@ -72,6 +74,9 @@ Singleton {
         }
         function close(): void {
             root.appGridOpen = false
+        }
+        function refreshUpdates(): void {
+            root.appGridRefreshUpdatesRequested();
         }
     }
 
