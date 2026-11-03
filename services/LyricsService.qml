@@ -107,10 +107,19 @@ Singleton {
     readonly property real wordEaseMix: 0.3
 
     function vocalEase(t, dur) {
-        if (t <= 0) return 0;
-        if (t >= 1) return 1;
-        if (dur < 0.15) return t;
-        return t + (t * t * (3.0 - 2.0 * t) - t) * root.wordEaseMix;
+        if (t <= 0) return 0.0;
+        if (t >= 1) return 1.0;
+        if (dur < 0.12) return t;
+        // Adaptive vocal easing: scales smoothly so held vocal notes get an organic S-curve swell
+        let mix = Math.min(0.60, 0.20 + 0.25 * Math.min(2.0, dur));
+        return t + (t * t * (3.0 - 2.0 * t) - t) * mix;
+    }
+
+    function capitalizeFirstLetter(str) {
+        if (!str) return "";
+        return str.replace(/^([^\p{L}\p{N}]*)(\p{L})/u, function(_, leading, letter) {
+            return leading + letter.toUpperCase();
+        });
     }
 
     function escapeXml(s) {
@@ -875,6 +884,19 @@ Singleton {
         for (let i = 0; i < parsed.length; i++) {
             let p = parsed[i];
             delete p._k;
+            if (p.text && p.text !== "♪") {
+                p.text = root.capitalizeFirstLetter(p.text);
+                if (p.isWordSynced && p.words && p.words.length > 0) {
+                    for (let w = 0; w < p.words.length; w++) {
+                        let orig = p.words[w].text;
+                        let cap = root.capitalizeFirstLetter(orig);
+                        if (cap !== orig) {
+                            p.words[w].text = cap;
+                            break;
+                        }
+                    }
+                }
+            }
             let nextT = (i + 1 < parsed.length) ? parsed[i + 1].time : (p.time + 4.5);
             let rawGap = Math.max(0.1, nextT - p.time);
 
@@ -1130,8 +1152,9 @@ Singleton {
     }
 
     // Per word: pixel position after each character (cx) and the cumulative share of the word's
-    // duration each character is allotted (ct, ending at 1). Cumulative-prefix measurement keeps
-    // kerning exact, but costs one layout per character, so it is only done for lines actually sung.
+    // Per word: pixel position after each character (cx) and balanced character duration shares (ct).
+    // Balances glyph count with visual width proportion so narrow characters do not crawl
+    // and wide characters do not sprint.
     function _computeBounds(line) {
         let bounds = [];
         let prefix = "";
@@ -1146,40 +1169,19 @@ Singleton {
             for (let j = 0; j < n; j++) {
                 acc += chars[j];
                 cx.push(j === n - 1 ? root.measurePixelWidth(prefix + text) : root.measurePixelWidth(prefix + acc));
-                ct.push((j + 1) / n);
             }
-            prefix += text;
             let endX = n > 0 ? cx[n - 1] : prevW;
+            let wordW = endX - prevW;
 
-            // Monotonic PCHIP tangents for smooth C1 velocity across character boundaries
-            let tangents = [];
-            if (n > 1) {
-                let slopes = [];
-                for (let j = 0; j < n; j++) {
-                    let prevX = j === 0 ? prevW : cx[j - 1];
-                    let prevT = j === 0 ? 0 : ct[j - 1];
-                    let dt = ct[j] - prevT;
-                    let dx = cx[j] - prevX;
-                    slopes.push(dt > 0 ? dx / dt : 0);
-                }
-                for (let j = 0; j <= n; j++) {
-                    if (j === 0) {
-                        tangents.push(slopes[0]);
-                    } else if (j === n) {
-                        tangents.push(slopes[n - 1]);
-                    } else {
-                        let s0 = slopes[j - 1];
-                        let s1 = slopes[j];
-                        if (s0 * s1 <= 0) {
-                            tangents.push(0);
-                        } else {
-                            tangents.push((2 * s0 * s1) / (s0 + s1));
-                        }
-                    }
-                }
+            // Balance character timing between glyph index and visual width proportion
+            for (let j = 0; j < n; j++) {
+                let indexFrac = (j + 1) / n;
+                let visualFrac = wordW > 0 ? Math.max(0.0, Math.min(1.0, (cx[j] - prevW) / wordW)) : indexFrac;
+                ct.push(0.4 * indexFrac + 0.6 * visualFrac);
             }
 
-            bounds.push({ startX: prevW, endX: endX, cx: cx, ct: ct, tangents: tangents });
+            prefix += text;
+            bounds.push({ startX: prevW, endX: endX, cx: cx, ct: ct });
             prevW = endX;
         }
         line._wordBounds = bounds;
@@ -1223,28 +1225,37 @@ Singleton {
         let rawT = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
         let e = root.vocalEase(rawT, dur);
 
-        // Find the character being sung and interpolate inside its slice of the word
-        let ct = b.ct;
-        let cx = b.cx;
-        let tangents = b.tangents;
-        let k = 0;
-        while (k < ct.length - 1 && e >= ct[k]) k++;
-        let t0 = k === 0 ? 0 : ct[k - 1];
-        let span = ct[k] - t0;
-        let local = span > 0 ? Math.min(1.0, (e - t0) / span) : 1.0;
-        let x0 = k === 0 ? b.startX : cx[k - 1];
-        let x1 = cx[k];
+        let startX = b.startX;
+        let endX = b.endX;
+        let wordSpan = endX - startX;
+        if (wordSpan <= 0) return startX / totalW;
+
+        // Continuous smooth position across the whole word
+        let smoothX = startX + e * wordSpan;
+
+        // When word duration is higher, smoothly transition to a continuous, fluid sweep.
+        // Sustained held words (dur >= 0.8s) glide completely continuously across characters
+        // without per-letter velocity ripples or stutter.
+        let smoothBlend = Math.min(1.0, Math.max(0.0, (dur - 0.20) / 0.60));
 
         let pixelX;
-        if (tangents && tangents.length > k + 1) {
-            let m0 = tangents[k];
-            let m1 = tangents[k + 1];
-            let l2 = local * local;
-            let l3 = l2 * local;
-            pixelX = (2 * l3 - 3 * l2 + 1) * x0 + (l3 - 2 * l2 + local) * span * m0 + (-2 * l3 + 3 * l2) * x1 + (l3 - l2) * span * m1;
+        if (smoothBlend >= 1.0 || !b.cx || b.cx.length <= 1) {
+            pixelX = smoothX;
         } else {
-            pixelX = x0 + local * (x1 - x0);
+            let ct = b.ct;
+            let cx = b.cx;
+            let k = 0;
+            while (k < ct.length - 1 && e >= ct[k]) k++;
+            let t0 = k === 0 ? 0 : ct[k - 1];
+            let span = ct[k] - t0;
+            let local = span > 0 ? (e - t0) / span : 1.0;
+            let x0 = k === 0 ? startX : cx[k - 1];
+            let x1 = cx[k];
+            let charX = x0 + local * (x1 - x0);
+
+            pixelX = charX + smoothBlend * (smoothX - charX);
         }
+
         return Math.max(0.0, Math.min(1.0, pixelX / totalW));
     }
 
