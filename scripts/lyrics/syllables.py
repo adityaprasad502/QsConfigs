@@ -3,9 +3,11 @@ import base64
 import gzip
 import json
 import re
+import threading
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 import zlib
 
 
@@ -30,6 +32,11 @@ _U6 = _d("68747470733a2f2f6d757369632e3136332e636f6d2f6170692f636c6f756473656172
 _U7 = _d("68747470733a2f2f6d757369632e3136332e636f6d2f6170692f736f6e672f6c797269633f69643d2573266c763d2d31266b763d2d312674763d2d312679763d31")
 _NE_REF = _d("68747470733a2f2f6d757369632e3136332e636f6d2f")
 _P2_REF = _d("68747470733a2f2f792e71712e636f6d2f")
+
+_U8 = _d("68747470733a2f2f73706f74696679706c75732d6170692e6465766f6e2d73686f75747a2e776f726b6572732e6465762f6170692f6c79726963732f2573")
+_U9 = _d("68747470733a2f2f616d6c6c64622e62696b6f6e6f6f2e636f6d2f6170692f7365617263682d6c7972696373")
+_U10 = _d("68747470733a2f2f616d6c6c64622e62696b6f6e6f6f2e636f6d2f7261772d6c79726963732f2573")
+_H_UA = _d("53706f74696679506c75732d4d6f62696c65")
 
 _CONTENT_RE = re.compile(r"<content[^>]*><!\[CDATA\[(.*?)\]\]></content>", re.DOTALL)
 
@@ -146,7 +153,7 @@ def _make_query(title, artist=""):
 # ==============================================================================
 # Provider 1
 # ==============================================================================
-def fetch_p1(title, artist="", target_duration=0):
+def fetch_p1(title, artist="", target_duration=0, **kwargs):
     query = _make_query(title, artist)
     if not query:
         return None
@@ -521,7 +528,7 @@ def _normalize_qrc(raw_qrc):
         out.append(res)
     return "\n".join(out)
 
-def fetch_p2(title, artist="", target_duration=0):
+def fetch_p2(title, artist="", target_duration=0, **kwargs):
     query = _make_query(title, artist)
     if not query:
         return None
@@ -628,7 +635,7 @@ def _normalize_p3(raw_lyrics):
         out.append(res)
     return "\n".join(out)
 
-def fetch_p3(title, artist="", target_duration=0):
+def fetch_p3(title, artist="", target_duration=0, **kwargs):
     query = _make_query(title, artist)
     if not query:
         return None
@@ -672,6 +679,314 @@ def fetch_p3(title, artist="", target_duration=0):
         return None
 
 # ==============================================================================
+# Provider 4
+# ==============================================================================
+def _normalize_p4(data):
+    if not data or not isinstance(data, dict):
+        return None
+    content = data.get("Content", [])
+    if not content:
+        return None
+    out = []
+
+    def _format_syls(syls, st_ms, min_start_ms=0, wrap_parens=False):
+        if not syls:
+            return ""
+        res = ""
+        prev_st = min_start_ms
+        for idx, s in enumerate(syls):
+            w_st = max(prev_st, int(round(s.get("StartTime", 0) * 1000)))
+            w_en = max(w_st + 1, int(round(s.get("EndTime", 0) * 1000)))
+            w_dur = max(1, w_en - w_st)
+            w_off = max(0, w_st - st_ms)
+            prev_st = w_st
+            txt = s.get("Text", "")
+            if wrap_parens and idx == 0 and not txt.startswith("("):
+                txt = "(" + txt
+            is_part = s.get("IsPartOfWord", False)
+            if not is_part and not txt.endswith(" ") and idx + 1 < len(syls):
+                txt += " "
+            if wrap_parens and idx == len(syls) - 1 and not txt.endswith(")"):
+                txt = txt.rstrip() + ")"
+            res += f"<{w_off},{w_dur},0>{txt}"
+        return res
+
+    for line in content:
+        lead = line.get("Lead")
+        bgs = line.get("Background")
+        if not lead and not bgs:
+            continue
+
+        if not lead:
+            for bg in (bgs if isinstance(bgs, list) else []):
+                bg_st_ms = int(round(bg.get("StartTime", 0) * 1000))
+                bg_en_ms = int(round(bg.get("EndTime", 0) * 1000))
+                bg_dur = max(0, bg_en_ms - bg_st_ms)
+                bg_syls = bg.get("Syllables", [])
+                if bg_syls:
+                    res = f"[{bg_st_ms},{bg_dur}]" + _format_syls(bg_syls, bg_st_ms, wrap_parens=True)
+                    out.append((bg_st_ms, res))
+            continue
+
+        lead_syls = lead.get("Syllables", [])
+        if not lead_syls:
+            continue
+
+        lead_st_ms = int(round(lead.get("StartTime", 0) * 1000))
+        lead_en_ms = int(round(lead.get("EndTime", 0) * 1000))
+        valid_bgs = [bg for bg in (bgs if isinstance(bgs, list) else []) if bg.get("Syllables")]
+
+        if not valid_bgs:
+            dur_ms = max(0, lead_en_ms - lead_st_ms)
+            res = f"[{lead_st_ms},{dur_ms}]" + _format_syls(lead_syls, lead_st_ms)
+            out.append((lead_st_ms, res))
+        else:
+            all_bg_en = max(int(round(bg.get("EndTime", 0) * 1000)) for bg in valid_bgs)
+            line_st_ms = lead_st_ms
+            line_en_ms = max(lead_en_ms, all_bg_en)
+            dur_ms = max(0, line_en_ms - line_st_ms)
+            line_res = f"[{line_st_ms},{dur_ms}]" + _format_syls(lead_syls, line_st_ms)
+
+            for bg in valid_bgs:
+                bg_syls = bg.get("Syllables", [])
+                if bg_syls:
+                    if not line_res.endswith(" "):
+                        line_res += " "
+                    line_res += _format_syls(bg_syls, line_st_ms, wrap_parens=True)
+            out.append((line_st_ms, line_res))
+
+    if not out:
+        return None
+    out.sort(key=lambda x: x[0])
+    return "\n".join(item[1] for item in out)
+
+def fetch_p4(title, artist="", target_duration=0, spotify_id="", **kwargs):
+    sid = spotify_id
+    data = None
+    if sid:
+        url = _U8 % sid
+        headers = {"User-Agent": _H_UA, "Accept": "application/json"}
+        try:
+            raw_json = _http(url, headers=headers, timeout=5.0).decode("utf-8", errors="ignore")
+            cand = json.loads(raw_json)
+            if cand.get("Type") == "Syllable":
+                data = cand
+        except Exception:
+            data = None
+
+    if not data:
+        items = _search_p5(title)
+        if items:
+            best = None
+            if sid:
+                for it in items:
+                    if sid in it.get("spotifyIds", []):
+                        best = it
+                        break
+            if not best:
+                best = _pick_best(
+                    items,
+                    lambda s: (s.get("title", ""), s.get("artist", ""), s.get("duration", 0)) if s.get("id") else None,
+                    title, artist, target_duration)
+            if best and best.get("spotifyIds"):
+                for alt_sid in best["spotifyIds"]:
+                    if alt_sid == sid:
+                        continue
+                    url = _U8 % alt_sid
+                    headers = {"User-Agent": _H_UA, "Accept": "application/json"}
+                    try:
+                        raw_json = _http(url, headers=headers, timeout=4.0).decode("utf-8", errors="ignore")
+                        cand = json.loads(raw_json)
+                        if cand.get("Type") == "Syllable":
+                            data = cand
+                            break
+                    except Exception:
+                        pass
+
+    if not data:
+        return None
+
+    return _normalize_p4(data)
+
+# ==============================================================================
+# Provider 5
+# ==============================================================================
+def _parse_p5_time_ms(s):
+    if not s:
+        return 0
+    s = s.strip()
+    if s.endswith("s"):
+        try:
+            return int(float(s[:-1]) * 1000)
+        except ValueError:
+            return 0
+    p = s.split(":")
+    if len(p) == 3:
+        try:
+            return int((int(p[0]) * 3600 + int(p[1]) * 60 + float(p[2])) * 1000)
+        except ValueError:
+            return 0
+    elif len(p) == 2:
+        try:
+            return int((int(p[0]) * 60 + float(p[1])) * 1000)
+        except ValueError:
+            return 0
+    try:
+        return int(float(s) * 1000)
+    except ValueError:
+        return 0
+
+def _normalize_p5(raw_ttml):
+    if not raw_ttml:
+        return None
+    try:
+        cleaned = re.sub(r'\sxmlns(?::\w+)?="[^"]*"', '', raw_ttml)
+        cleaned = re.sub(r'<\/?([a-zA-Z0-9_-]+):', lambda m: '<' if not m.group(0).startswith('</') else '</', cleaned)
+        cleaned = re.sub(r'\s[a-zA-Z0-9_-]+:([a-zA-Z0-9_-]+)=', r' \1=', cleaned)
+        root = ET.fromstring(cleaned)
+        out = []
+        for p in root.iter("p"):
+            b_str = p.attrib.get("begin")
+            if not b_str:
+                continue
+            e_str = p.attrib.get("end")
+            st_ms = _parse_p5_time_ms(b_str)
+            end_ms = _parse_p5_time_ms(e_str) if e_str else st_ms
+            dur_ms = max(0, end_ms - st_ms)
+            is_bg = "bg" in p.attrib.get("role", "").lower()
+
+            spans = [
+                sp for sp in p.iter("span")
+                if len(list(sp)) == 0 and sp.attrib.get("begin") and "translation" not in sp.attrib.get("role", "").lower()
+            ]
+            if spans:
+                # If this is a background vocal and it overlaps with the previous line, merge into it
+                if is_bg and out:
+                    prev_st, prev_line = out[-1]
+                    m_prev = re.match(r"^\[(\d+),(\d+)\](.*)$", prev_line)
+                    if m_prev:
+                        p_st = int(m_prev.group(1))
+                        p_dur = int(m_prev.group(2))
+                        p_end = p_st + p_dur
+                        if st_ms < p_end + 400:
+                            new_end = max(p_end, end_ms)
+                            new_dur = new_end - p_st
+                            bg_part = ""
+                            for idx, sp in enumerate(spans):
+                                sp_st = _parse_p5_time_ms(sp.attrib.get("begin"))
+                                sp_en = _parse_p5_time_ms(sp.attrib.get("end")) if sp.attrib.get("end") else sp_st
+                                sp_dur = max(1, sp_en - sp_st)
+                                sp_off = max(0, sp_st - p_st)
+                                txt = (sp.text or "") + (sp.tail or "")
+                                if idx == 0 and not txt.startswith("("):
+                                    txt = "(" + txt
+                                if idx == len(spans) - 1 and not txt.endswith(")"):
+                                    txt = txt.rstrip() + ")"
+                                bg_part += f"<{sp_off},{sp_dur},0>{txt}"
+                            sep = " " if not m_prev.group(3).endswith(" ") else ""
+                            merged_line = f"[{p_st},{new_dur}]{m_prev.group(3)}{sep}{bg_part}"
+                            out[-1] = (p_st, merged_line)
+                            continue
+
+                line_res = f"[{st_ms},{dur_ms}]"
+                for idx, sp in enumerate(spans):
+                    sp_st = _parse_p5_time_ms(sp.attrib.get("begin"))
+                    sp_en = _parse_p5_time_ms(sp.attrib.get("end")) if sp.attrib.get("end") else sp_st
+                    sp_dur = max(1, sp_en - sp_st)
+                    sp_off = max(0, sp_st - st_ms)
+                    txt = (sp.text or "") + (sp.tail or "")
+                    if is_bg and idx == 0 and not txt.startswith("("):
+                        txt = "(" + txt
+                    if is_bg and idx == len(spans) - 1 and not txt.endswith(")"):
+                        txt = txt.rstrip() + ")"
+                    line_res += f"<{sp_off},{sp_dur},0>{txt}"
+                out.append((st_ms, line_res))
+            else:
+                txt = "".join(p.itertext()).strip()
+                if txt:
+                    if is_bg and out:
+                        prev_st, prev_line = out[-1]
+                        m_prev = re.match(r"^\[(\d+),(\d+)\](.*)$", prev_line)
+                        if m_prev:
+                            p_st = int(m_prev.group(1))
+                            p_dur = int(m_prev.group(2))
+                            p_end = p_st + p_dur
+                            if st_ms < p_end + 400:
+                                new_end = max(p_end, end_ms)
+                                new_dur = new_end - p_st
+                                bg_txt = f"({txt})" if not txt.startswith("(") else txt
+                                sep = " " if not m_prev.group(3).endswith(" ") else ""
+                                merged_line = f"[{p_st},{new_dur}]{m_prev.group(3)}{sep}{bg_txt}"
+                                out[-1] = (p_st, merged_line)
+                                continue
+                    if is_bg and not txt.startswith("("):
+                        txt = "(" + txt + ")"
+                    out.append((st_ms, f"[{st_ms},{dur_ms}]{txt}"))
+        if not out:
+            return None
+        out.sort(key=lambda x: x[0])
+        return "\n".join(item[1] for item in out)
+    except Exception:
+        return None
+
+_p5_lock = threading.Lock()
+_p5_cache = {}
+
+def _search_p5(title):
+    if not title:
+        return []
+    with _p5_lock:
+        if title in _p5_cache:
+            return _p5_cache[title]
+
+    body = json.dumps({"query": title, "type": "title"}).encode("utf-8")
+    try:
+        raw = _http(_U9, headers={"Content-Type": "application/json"}, data=body, timeout=5.0)
+        items = json.loads(raw.decode("utf-8"))
+        if not isinstance(items, list):
+            items = []
+    except Exception:
+        items = []
+
+    with _p5_lock:
+        if items:
+            _p5_cache[title] = items
+    return items
+
+def fetch_p5(title, artist="", target_duration=0, spotify_id="", **kwargs):
+    items = _search_p5(title)
+    if not items:
+        return None
+
+    best = None
+    if spotify_id:
+        for it in items:
+            if spotify_id in it.get("spotifyIds", []):
+                best = it
+                break
+
+    if not best:
+        best = _pick_best(
+            items,
+            lambda s: (s.get("title", ""), s.get("artist", ""), s.get("duration", 0)) if s.get("id") else None,
+            title, artist, target_duration)
+
+    if not best:
+        return None
+
+    cand_id = best.get("id")
+    if not cand_id:
+        return None
+
+    raw_url = _U10 % cand_id
+    try:
+        raw_ttml = _http(raw_url, timeout=5.0).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    return _normalize_p5(raw_ttml)
+
+# ==============================================================================
 # Helpers for the orchestrator (fetch_lyrics.py)
 # ==============================================================================
 def slim_lyrics(raw):
@@ -686,5 +1001,62 @@ def slim_lyrics(raw):
 def is_word_synced(text):
     return bool(text) and "<" in text and ">" in text
 
-# Word-synced providers, best first: p1, p2, p3
-PROVIDERS = (("src1", fetch_p1), ("src2", fetch_p2), ("src3", fetch_p3))
+def normalize_all_caps(text):
+    """Normalize full-document ALL-CAPS lyrics to natural sentence case while preserving timing tags.
+    If the document has normal mixed casing (e.g. random capitalized words for emphasis), it is left untouched.
+    """
+    if not text:
+        return text
+
+    clean = re.sub(r"\[[^\]]+\]", "", text)
+    clean = re.sub(r"<[^>]+>", "", clean)
+    clean = re.sub(r"\([0-9,]+\)", "", clean)
+
+    upper = sum(1 for c in clean if c.isupper())
+    lower = sum(1 for c in clean if c.islower())
+    tot = upper + lower
+    if tot < 30 or (upper / tot) < 0.70:
+        return text
+
+    def _norm_str(s):
+        s = s.lower()
+        s = re.sub(r"^([^\w]*)([\w])", lambda m: m.group(1) + m.group(2).upper(), s)
+        s = re.sub(r"([.!?]\s+)([\w])", lambda m: m.group(1) + m.group(2).upper(), s)
+        s = re.sub(r"\b(i)(['’](?:m|ve|ll|d))?\b", lambda m: "I" + (m.group(2) if m.group(2) else ""), s)
+        s = re.sub(r"\b(ok|dj|tv|vip|sos|usa|uk)\b", lambda m: m.group(1).upper(), s)
+        return s
+
+    out = []
+    for line in text.splitlines():
+        tokens = list(re.finditer(r"(<[^>]+>)([^<]*)", line))
+        if tokens:
+            prefix = line[:tokens[0].start()]
+            words = [m.group(2) for m in tokens]
+            full_line = "".join(words)
+            norm_full = _norm_str(full_line)
+            new_line = prefix
+            off = 0
+            for m in tokens:
+                tag = m.group(1)
+                w_len = len(m.group(2))
+                new_w = norm_full[off:off + w_len]
+                off += w_len
+                new_line += tag + new_w
+            out.append(new_line)
+        else:
+            m = re.match(r"^(\[[^\]]+\]\s*)(.*)$", line)
+            if m:
+                out.append(m.group(1) + _norm_str(m.group(2)))
+            else:
+                out.append(_norm_str(line))
+
+    return "\n".join(out)
+
+# Word-synced providers: p4, p5, p1, p2, p3
+PROVIDERS = (
+    ("src4", fetch_p4),
+    ("src5", fetch_p5),
+    ("src1", fetch_p1),
+    ("src2", fetch_p2),
+    ("src3", fetch_p3),
+)

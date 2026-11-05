@@ -567,7 +567,7 @@ def lrc_lookup(title, artist, duration, album=""):
 # ------------------------------------------------------------------------------------------------
 # Orchestration
 # ------------------------------------------------------------------------------------------------
-def run(title, artist, duration, cache_dir, emit, album=""):
+def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
     start = time.monotonic()
     sy.set_deadline(start + TOTAL_BUDGET)
     now = time.time()
@@ -585,7 +585,7 @@ def run(title, artist, duration, cache_dir, emit, album=""):
         age_str = f"{_format_time_interval(now - ts)} ago"
         sz_str = f", {_file_sz(path)}" if _file_sz(path) else ""
         _log(f"[HIT] Karaoke ({entry.get('src', 'cache')}, {age_str}{sz_str}): \"{title}\" - \"{artist}\"")
-        emit({"k": "word", "text": entry["word"]})
+        emit({"k": "word", "text": sy.normalize_all_caps(entry["word"])})
         return
     if entry.get("instrumental") and now - ts < TTL_WORD:
         _touch(path)
@@ -613,7 +613,7 @@ def run(title, artist, duration, cache_dir, emit, album=""):
         sz_str = f", {_file_sz(path)}" if _file_sz(path) else ""
         _log(f"[HIT] Line-synced (lrc, {age_str}{sz_str}): \"{title}\" - \"{artist}\"")
         lrc = entry["lrc"]
-        emit({"k": "lrc", "synced": lrc.get("synced", ""), "plain": lrc.get("plain", "")})
+        emit({"k": "lrc", "synced": sy.normalize_all_caps(lrc.get("synced", "")), "plain": sy.normalize_all_caps(lrc.get("plain", ""))})
         need_lrc = False
         time_since_tried = now - entry.get("word_tried", 0)
         if time_since_tried < TTL_RETRY_WORD:
@@ -627,7 +627,8 @@ def run(title, artist, duration, cache_dir, emit, album=""):
 
     active_sources = ["lrc"] if need_lrc else []
     active_sources += [name for name, _ in sy.PROVIDERS]
-    _log(f"[FETCH] Querying [{', '.join(active_sources)}] for \"{title}\" - \"{artist}\" ({duration}s)")
+    id_note = f" [id: {spotify_id}]" if spotify_id else ""
+    _log(f"[FETCH] Querying [{', '.join(active_sources)}] for \"{title}\" - \"{artist}\" ({duration}s){id_note}")
 
     events = queue.Queue()
     words_pending = 0
@@ -655,7 +656,7 @@ def run(title, artist, duration, cache_dir, emit, album=""):
                 events.put(("lrc", None, False))
         threading.Thread(target=lrc_worker, daemon=True).start()
 
-    def _lyric_quality(text, target_dur=0):
+    def _lyric_quality(text, target_dur=0, provider=""):
         """Multi-factor lyric quality scoring:
         Evaluates:
           1. Word & syllable count with healthy density weighting (diminishing returns).
@@ -664,6 +665,7 @@ def run(title, artist, duration, cache_dir, emit, album=""):
           4. Duration precision (continuous falloff penalty for drift).
           5. Monotonicity & timing integrity (no reversed line timestamps).
           6. Penalties for placeholders ('纯音乐'), snippets, or truncated texts.
+          7. Provider quality tier (Studio Apple Music > Commercial Karaoke).
         """
         if not text:
             return 0
@@ -756,6 +758,16 @@ def run(title, artist, duration, cache_dir, emit, album=""):
                 elif coverage < 0.30:
                     score -= 180.0  # Heavy penalty for short snippet/intro
 
+        # 5. Provider Quality Tier (p4 studio word-sync > p5 community TTML > p1/p2/p3 commercial karaoke)
+        PROVIDER_TIERS = {
+            "src4": 95,
+            "src5": 75,
+            "src1": 40,
+            "src2": 40,
+            "src3": 30,
+        }
+        score += PROVIDER_TIERS.get(provider, 0)
+
         return int(round(score))
 
     best_word = None  # (name, text, score)
@@ -764,12 +776,12 @@ def run(title, artist, duration, cache_dir, emit, album=""):
         t0 = time.monotonic()
         try:
             _log(f"[QUERY] {name}: Searching karaoke (word-synced)...")
-            raw = fn(title, artist, duration)
+            raw = fn(title, artist, duration, spotify_id=spotify_id)
             elapsed = time.monotonic() - t0
-            text = sy.slim_lyrics(raw) if raw else ""
+            text = sy.normalize_all_caps(sy.slim_lyrics(raw)) if raw else ""
             if text and sy.is_word_synced(text):
                 wc = text.count("<")
-                score = _lyric_quality(text, duration)
+                score = _lyric_quality(text, duration, provider=name)
                 _log(f"[RESULT] {name}: Karaoke found ({wc} timed words, score: {score}, {elapsed:.2f}s)")
                 events.put(("word", name, text, score))
             else:
@@ -804,6 +816,7 @@ def run(title, artist, duration, cache_dir, emit, album=""):
                     old_name, old_text, old_score = best_word
                     restored, words_cnt, lines_cnt = restore_explicit_lyrics(old_text, None)
                     if words_cnt > 0:
+                        restored = sy.normalize_all_caps(restored)
                         _log(f"[RESTORE] {old_name}: Restored {words_cnt} explicit words ({lines_cnt} lines) using fallback")
                         best_word = (old_name, restored, old_score)
                         emit({"k": "word", "text": restored})
@@ -822,11 +835,12 @@ def run(title, artist, duration, cache_dir, emit, album=""):
                 if result.get("instrumental"):
                     is_instrumental = True
                 else:
-                    lrc = {"synced": result.get("syncedLyrics") or "", "plain": result.get("plainLyrics") or ""}
+                    lrc = {"synced": sy.normalize_all_caps(result.get("syncedLyrics") or ""), "plain": sy.normalize_all_caps(result.get("plainLyrics") or "")}
                     if best_word:
                         old_name, old_text, old_score = best_word
                         restored, words_cnt, lines_cnt = restore_explicit_lyrics(old_text, lrc)
                         if words_cnt > 0:
+                            restored = sy.normalize_all_caps(restored)
                             _log(f"[RESTORE] {old_name}: Restored {words_cnt} explicit words ({lines_cnt} lines) using lrc")
                             best_word = (old_name, restored, old_score)
                             emit({"k": "word", "text": restored})
@@ -848,6 +862,7 @@ def run(title, artist, duration, cache_dir, emit, album=""):
                     old_name, old_text, old_score = best_word
                     restored, words_cnt, lines_cnt = restore_explicit_lyrics(old_text, None)
                     if words_cnt > 0:
+                        restored = sy.normalize_all_caps(restored)
                         _log(f"[RESTORE] {old_name}: Restored {words_cnt} explicit words ({lines_cnt} lines) using fallback")
                         best_word = (old_name, restored, old_score)
                         emit({"k": "word", "text": restored})
@@ -863,28 +878,30 @@ def run(title, artist, duration, cache_dir, emit, album=""):
             _, name, text, score = ev
             pending_providers.discard(name)
             if text:
+                is_initial = best_word is None
+                is_upgrade = not is_initial and score > best_word[2]
+
+                if not (is_initial or is_upgrade):
+                    _log(f"[DISCARD] {name} match ignored (score: {score} <= {best_word[0]} score: {best_word[2]})")
+                    continue
+
                 if lrc and "*" in text:
                     restored, words_cnt, lines_cnt = restore_explicit_lyrics(text, lrc)
                     if words_cnt > 0:
                         _log(f"[RESTORE] {name}: Restored {words_cnt} explicit words ({lines_cnt} lines) using lrc")
                         text = restored
 
-                is_initial = best_word is None
-                is_upgrade = not is_initial and score > best_word[2]
                 if is_initial:
                     _log(f"[EMIT] Initial karaoke source: {name} (score: {score})")
                 elif is_upgrade:
                     old_name, _, old_score = best_word
                     diff = score - old_score
                     _log(f"[UPGRADE] Replaced {old_name} (score: {old_score}) -> BETTER match from {name} (score: {score}, +{diff} pts)")
-                else:
-                    _log(f"[DISCARD] {name} match ignored (score: {score} <= {best_word[0]} score: {best_word[2]})")
 
-                if is_initial or is_upgrade:
-                    best_word = (name, text, score)
-                    emit({"k": "word", "text": text})
-                    if path:
-                        cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": text, "src": name})
+                best_word = (name, text, score)
+                emit({"k": "word", "text": text})
+                if path:
+                    cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": text, "src": name})
             if words_pending == 0 and best_word is not None:
                 if lrc_pending:
                     continue  # Wait for line-synced lyrics to un-censor asterisks
@@ -940,6 +957,7 @@ def main(argv):
         duration = 0
     cache_dir = argv[4] if len(argv) > 4 else ""
     album = argv[5] if len(argv) > 5 else ""
+    spotify_id = argv[6] if len(argv) > 6 else ""
 
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -951,7 +969,7 @@ def main(argv):
         sys.stdout.flush()
 
     try:
-        run(title, artist, duration, cache_dir, emit, album)
+        run(title, artist, duration, cache_dir, emit, album, spotify_id)
     except Exception:
         emit({"k": "fail"})
     return 0

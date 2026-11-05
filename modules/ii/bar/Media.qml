@@ -257,16 +257,37 @@ Item {
                     Item {
                         id: lyricClipOverlay
                         visible: root.hasLyrics && LyricsService.hasWordSync && LyricsService.currentLineProgress > 0
-                        anchors.left: parent.left
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
-                        width: Math.min(parent.implicitWidth, Math.max(0, parent.implicitWidth * LyricsService.currentLineProgress))
+                        x: LyricsService.hasBgWords ? Math.round(LyricsService.leadWordsStartX) : 0
+                        width: LyricsService.hasBgWords
+                               ? Math.min(LyricsService.leadWordsWidth, Math.max(0, LyricsService.leadWordsWidth * LyricsService.currentLineProgress))
+                               : Math.min(parent.implicitWidth, Math.max(0, parent.implicitWidth * LyricsService.currentLineProgress))
                         clip: true
 
                         StyledText {
-                            anchors.left: parent.left
                             anchors.top: parent.top
                             anchors.bottom: parent.bottom
+                            x: -lyricClipOverlay.x
+                            width: topBarMusicText.implicitWidth
+                            textFormat: Text.StyledText
+                            text: visible ? LyricsService.currentLyricLineLit : ""
+                        }
+                    }
+
+                    Item {
+                        id: lyricBgClipOverlay
+                        visible: root.hasLyrics && LyricsService.hasWordSync && LyricsService.hasBgWords && LyricsService.currentBgLineProgress > 0
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        x: Math.round(LyricsService.bgWordsStartX)
+                        width: Math.min(LyricsService.bgWordsWidth, Math.max(0, LyricsService.bgWordsWidth * LyricsService.currentBgLineProgress))
+                        clip: true
+
+                        StyledText {
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            x: -lyricBgClipOverlay.x
                             width: topBarMusicText.implicitWidth
                             textFormat: Text.StyledText
                             text: visible ? LyricsService.currentLyricLineLit : ""
@@ -318,17 +339,36 @@ Item {
 
                     Item {
                         id: lyricClipOverlayDup
-                        visible: root.hasLyrics && LyricsService.hasWordSync && LyricsService.currentLineProgress > 0
-                        anchors.left: parent.left
+                        visible: lyricClipOverlay.visible
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
-                        width: Math.min(parent.implicitWidth, Math.max(0, parent.implicitWidth * LyricsService.currentLineProgress))
+                        x: lyricClipOverlay.x
+                        width: lyricClipOverlay.width
                         clip: true
 
                         StyledText {
-                            anchors.left: parent.left
                             anchors.top: parent.top
                             anchors.bottom: parent.bottom
+                            x: -lyricClipOverlayDup.x
+                            width: topBarMusicTextDup.implicitWidth
+                            textFormat: Text.StyledText
+                            text: visible ? LyricsService.currentLyricLineLit : ""
+                        }
+                    }
+
+                    Item {
+                        id: lyricBgClipOverlayDup
+                        visible: lyricBgClipOverlay.visible
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        x: lyricBgClipOverlay.x
+                        width: lyricBgClipOverlay.width
+                        clip: true
+
+                        StyledText {
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            x: -lyricBgClipOverlayDup.x
                             width: topBarMusicTextDup.implicitWidth
                             textFormat: Text.StyledText
                             text: visible ? LyricsService.currentLyricLineLit : ""
