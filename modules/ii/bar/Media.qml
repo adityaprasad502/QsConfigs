@@ -36,6 +36,7 @@ Item {
     readonly property bool isPaused: activePlayer != null && !root.isPlaying && !root.isFinished
     readonly property bool hasMedia: activePlayer != null && !root.isFinished && (root.isPlaying || (StringUtils.cleanMusicTitle(activePlayer?.trackTitle) || "") !== "")
     readonly property bool hasLyrics: root.hasMedia && root.isPlaying && ((LyricsService.currentLyricLine && LyricsService.currentLyricLine.length > 0) || LyricsService.lyricLines.length > 0)
+    readonly property color placeholderColor: ColorUtils.mix(Appearance.colors.colSubtext, Appearance.colors.colLayer0, 0.70)
 
     Process {
         id: cavaProc
@@ -154,7 +155,7 @@ Item {
                 anchors.centerIn: parent
                 text: "󰣇"
                 font.pixelSize: Appearance.font.pixelSize.normal
-                color: Appearance.colors.colSubtext
+                color: root.placeholderColor
                 visible: !root.hasMedia
                 opacity: visible ? 1 : 0
                 Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
@@ -220,26 +221,122 @@ Item {
             }
 
             readonly property bool isOverflowing: width > 0 && topBarMusicText.implicitWidth > width + 5
+            readonly property real endMargin: 20
+            readonly property real maxScroll: Math.max(0, topBarMusicText.implicitWidth - width + endMargin)
+            readonly property real anchorX: width * 0.40
 
-            property string lastPlainLine: ""
+            property real minFollowerX: 0
+            property string lastLineKey: ""
+
+            readonly property real targetScrollX: {
+                if (!root.hasLyrics || !isOverflowing) return 0;
+                let activeX = LyricsService.hasWordSync
+                    ? LyricsService.currentSweepX
+                    : (topBarMusicText.implicitWidth * (LyricsService.currentLineProgress || 0));
+                if (activeX <= anchorX) return 0;
+                let scroll = -(activeX - anchorX);
+                return Math.max(-maxScroll, scroll);
+            }
+
+            function triggerTrackMarquee() {
+                topBarMarqueeAnim.stop();
+                topBarMarqueeRow.x = 0;
+                if (!isOverflowing || root.hasLyrics) return;
+                marqueePauseAnim.duration = 1800;
+                marqueeScrollAnim.duration = Math.max(3000, topBarMusicText.implicitWidth * 25);
+                marqueeScrollAnim.from = 0;
+                marqueeScrollAnim.to = -(topBarMusicText.implicitWidth + topBarMarqueeRow.spacing);
+                marqueeScrollAnim.easing.type = Easing.Linear;
+                topBarMarqueeAnim.restart();
+            }
+
+            FrameAnimation {
+                id: marqueeFollower
+                running: root.hasLyrics && topBarTextContainer.isOverflowing && root.isPlaying
+                onTriggered: {
+                    let activeX = LyricsService.hasWordSync
+                        ? LyricsService.currentSweepX
+                        : (topBarMusicText.implicitWidth * (LyricsService.currentLineProgress || 0));
+
+                    // At the start of the line (first 40%), stay strictly anchored at 0
+                    if (activeX <= topBarTextContainer.anchorX) {
+                        topBarTextContainer.minFollowerX = 0;
+                        if (Math.abs(topBarMarqueeRow.x) > 0.05) {
+                            let dt = Math.max(0.001, Math.min(0.05, frameTime));
+                            topBarMarqueeRow.x = topBarMarqueeRow.x * Math.exp(-12.0 * dt);
+                        } else {
+                            topBarMarqueeRow.x = 0;
+                        }
+                        return;
+                    }
+
+                    // Active vocal passed 40%: monotonic forward tracking
+                    let rawTarget = topBarTextContainer.targetScrollX;
+                    if (rawTarget < topBarTextContainer.minFollowerX) {
+                        topBarTextContainer.minFollowerX = rawTarget;
+                    }
+
+                    let forwardTarget = topBarTextContainer.minFollowerX;
+                    let current = topBarMarqueeRow.x;
+                    let diff = forwardTarget - current;
+
+                    if (Math.abs(diff) < 0.1) {
+                        topBarMarqueeRow.x = forwardTarget;
+                    } else {
+                        let dt = Math.max(0.001, Math.min(0.05, frameTime));
+                        // Soft, cinematic gimbal follower: responsive yet buttery smooth
+                        let speed = 7.0;
+                        let step = diff * (1.0 - Math.exp(-speed * dt));
+                        topBarMarqueeRow.x = current + step;
+                    }
+                }
+            }
+
             onDisplayTextChanged: {
-                let currentPlain = root.hasLyrics ? LyricsService.currentLyricLine : displayText;
-                if (currentPlain !== lastPlainLine) {
-                    lastPlainLine = currentPlain;
-                    topBarMarqueeAnim.stop();
+                let currentKey = root.hasLyrics
+                    ? `${LyricsService.currentGroupStartIdx}:${LyricsService.currentLyricLine}`
+                    : displayText;
+                if (currentKey !== lastLineKey) {
+                    lastLineKey = currentKey;
+                    minFollowerX = 0;
                     topBarMarqueeRow.x = 0;
-                    if (isOverflowing)
-                        topBarMarqueeAnim.start();
-                } else if (!topBarMarqueeAnim.running && isOverflowing) {
-                    topBarMarqueeAnim.restart();
+                    if (!root.hasLyrics && isOverflowing) {
+                        triggerTrackMarquee();
+                    }
                 }
             }
             onIsOverflowingChanged: {
                 if (!isOverflowing) {
-                    topBarMarqueeAnim.stop();
+                    minFollowerX = 0;
                     topBarMarqueeRow.x = 0;
-                } else {
-                    topBarMarqueeAnim.restart();
+                    topBarMarqueeAnim.stop();
+                } else if (!root.hasLyrics && !topBarMarqueeAnim.running) {
+                    triggerTrackMarquee();
+                }
+            }
+
+            Connections {
+                target: root
+                function onHasLyricsChanged() {
+                    minFollowerX = 0;
+                    topBarMarqueeRow.x = 0;
+                    if (!root.hasLyrics && topBarTextContainer.isOverflowing) {
+                        topBarTextContainer.triggerTrackMarquee();
+                    } else {
+                        topBarMarqueeAnim.stop();
+                    }
+                }
+            }
+
+            Connections {
+                target: LyricsService
+                function onCurrentGroupStartIdxChanged() {
+                    topBarTextContainer.minFollowerX = 0;
+                    topBarMarqueeRow.x = 0;
+                }
+                function onSeekEpochChanged() {
+                    topBarTextContainer.minFollowerX = 0;
+                    topBarMarqueeRow.x = 0;
                 }
             }
 
@@ -247,12 +344,16 @@ Item {
                 id: topBarMarqueeRow
                 spacing: 36
                 x: 0
+                layer.enabled: topBarTextContainer.isOverflowing
+                layer.smooth: true
 
                 StyledText {
                     id: topBarMusicText
                     textFormat: root.hasLyrics ? Text.StyledText : Text.PlainText
-                    color: Appearance.colors.colSubtext
+                    color: root.hasLyrics ? ColorUtils.mix(Appearance.colors.colSubtext, Appearance.colors.colLayer0, 0.48) : (root.hasMedia ? Appearance.colors.colSubtext : ColorUtils.mix(Appearance.colors.colSubtext, Appearance.colors.colLayer0, 0.70))
                     text: topBarTextContainer.displayText
+                    font.weight: Font.Normal
+                    font.variableAxes: ({ "wght": 400 })
 
                     Item {
                         id: lyricPastOverlay
@@ -270,6 +371,8 @@ Item {
                             width: topBarMusicText.implicitWidth
                             textFormat: Text.StyledText
                             text: visible ? LyricsService.currentLyricLineLit : ""
+                            font.weight: Font.Normal
+                            font.variableAxes: ({ "wght": 400 })
                         }
                     }
 
@@ -318,6 +421,8 @@ Item {
                             width: topBarMusicText.implicitWidth
                             textFormat: Text.StyledText
                             text: visible ? LyricsService.currentLyricLineLit : ""
+                            font.weight: Font.Normal
+                            font.variableAxes: ({ "wght": 400 })
                         }
                     }
 
@@ -366,6 +471,8 @@ Item {
                             width: topBarMusicText.implicitWidth
                             textFormat: Text.StyledText
                             text: visible ? LyricsService.currentLyricLineLit : ""
+                            font.weight: Font.Normal
+                            font.variableAxes: ({ "wght": 400 })
                         }
                     }
 
@@ -401,103 +508,36 @@ Item {
                             width: topBarMusicText.implicitWidth
                             textFormat: Text.StyledText
                             text: visible ? LyricsService.currentLyricLineLit : ""
+                            font.weight: Font.Normal
+                            font.variableAxes: ({ "wght": 400 })
                         }
                     }
                 }
 
                 StyledText {
                     id: topBarMusicTextDup
-                    visible: topBarTextContainer.isOverflowing && topBarMarqueeAnim.running
-                    textFormat: root.hasLyrics ? Text.StyledText : Text.PlainText
+                    visible: !root.hasLyrics && topBarTextContainer.isOverflowing && topBarMarqueeAnim.running
                     color: Appearance.colors.colSubtext
                     text: visible ? topBarTextContainer.displayText : ""
-
-                    Item {
-                        id: lyricPastOverlayDup
-                        visible: lyricPastOverlay.visible
-                        anchors.top: parent.top
-                        anchors.bottom: parent.bottom
-                        x: lyricPastOverlay.x
-                        width: lyricPastOverlay.width
-                        clip: true
-
-                        StyledText {
-                            anchors.top: parent.top
-                            anchors.bottom: parent.bottom
-                            x: 0
-                            width: topBarMusicTextDup.implicitWidth
-                            textFormat: Text.StyledText
-                            text: visible ? LyricsService.currentLyricLineLit : ""
-                        }
-                    }
-
-                    Item {
-                        id: lyricClipOverlayDup
-                        visible: lyricClipOverlay.visible
-                        anchors.top: parent.top
-                        anchors.bottom: parent.bottom
-                        x: lyricClipOverlay.x
-                        width: lyricClipOverlay.width
-                        clip: true
-
-                        StyledText {
-                            anchors.top: parent.top
-                            anchors.bottom: parent.bottom
-                            x: -lyricClipOverlayDup.x
-                            width: topBarMusicTextDup.implicitWidth
-                            textFormat: Text.StyledText
-                            text: visible ? LyricsService.currentLyricLineLit : ""
-                        }
-                    }
-
-                    Item {
-                        id: lyricBgClipOverlayDup
-                        visible: lyricBgClipOverlay.visible
-                        anchors.top: parent.top
-                        anchors.bottom: parent.bottom
-                        x: lyricBgClipOverlay.x
-                        width: lyricBgClipOverlay.width
-                        clip: true
-
-                        StyledText {
-                            anchors.top: parent.top
-                            anchors.bottom: parent.bottom
-                            x: -lyricBgClipOverlayDup.x
-                            width: topBarMusicTextDup.implicitWidth
-                            textFormat: Text.StyledText
-                            text: visible ? LyricsService.currentLyricLineLit : ""
-                        }
-                    }
-
-                    Item {
-                        id: multilineSlideOverlayDup
-                        visible: multilineSlideOverlay.visible
-                        anchors.top: parent.top
-                        anchors.bottom: parent.bottom
-                        x: multilineSlideOverlay.x
-                        width: multilineSlideOverlay.width
-                        clip: true
-
-                        StyledText {
-                            anchors.top: parent.top
-                            anchors.bottom: parent.bottom
-                            x: -multilineSlideOverlayDup.x
-                            width: topBarMusicTextDup.implicitWidth
-                            textFormat: Text.StyledText
-                            text: visible ? LyricsService.currentLyricLineLit : ""
-                        }
-                    }
                 }
 
-                SequentialAnimation on x {
+                SequentialAnimation {
                     id: topBarMarqueeAnim
-                    running: topBarTextContainer.isOverflowing
+                    running: false
+                    paused: running && !root.isPlaying
                     loops: Animation.Infinite
-                    PauseAnimation { duration: 1800 }
+                    PauseAnimation {
+                        id: marqueePauseAnim
+                        duration: 1800
+                    }
                     NumberAnimation {
+                        id: marqueeScrollAnim
+                        target: topBarMarqueeRow
+                        property: "x"
                         from: 0
-                        to: -(topBarMusicText.implicitWidth + topBarMarqueeRow.spacing)
-                        duration: Math.max(3000, topBarMusicText.implicitWidth * 25)
+                        to: 0
+                        duration: 3000
+                        easing.type: Easing.Linear
                     }
                 }
             }
@@ -507,6 +547,9 @@ Item {
             id: trackTimeText
             visible: root.hasMedia && (root.isLive || (activePlayer?.length || 0) > 0)
             Layout.alignment: Qt.AlignVCenter
+            Layout.leftMargin: 10
+            Layout.preferredWidth: 46
+            horizontalAlignment: Text.AlignRight
             font.pixelSize: Appearance.font.pixelSize.small
             color: Appearance.colors.colSubtext
             text: {

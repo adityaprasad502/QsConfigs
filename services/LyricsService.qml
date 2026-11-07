@@ -33,6 +33,7 @@ Singleton {
     property string currentLyricLineDim: ""
     property string currentLyricLineLit: ""
     property real currentLineProgress: 0.0
+    property real currentLineDuration: 0.0
     // Independent per-track reveal geometry for word-synced lines. Background vocals
     // sweep on their own clock instead of waiting for the foreground to finish.
     property real currentLeadProgress: 0.0
@@ -43,6 +44,7 @@ Singleton {
     property real currentBgWidth: 0.0
     property real currentPastWidth: 0.0
     property bool currentLineHasBg: false
+    property real currentSweepX: 0.0
     property int currentGroupStartIdx: -1
     property bool isMultiLineGroup: false
     property bool allowHighlightSlide: false
@@ -58,6 +60,7 @@ Singleton {
     property real lastKnownTimestamp: 0
     property real lastMprisPos: -1
     property real lastWordSyncPos: 0
+    property int seekEpoch: 0
     property real syncLeadSeconds: 0.16 // Lead time in seconds (switches to next line slightly earlier)
 
     readonly property real firstLineLead: 1.0
@@ -86,25 +89,30 @@ Singleton {
     property int _slowInterval: 100
     readonly property bool _playing: activePlayer?.playbackState === MprisPlaybackState.Playing
 
-    // Precomputed lyric style colors: mixed over layer0 background so HTML <font color="..."> parses standard 6-digit RGB
-    readonly property color _colLitBase: Appearance?.colors?.colOnLayer1 ?? Appearance?.colors?.colOnLayer0 ?? "#e6e1e1"
+    // Quickshell native system palette integration: zero hardcoded colors
+    readonly property color _colLitBase: Appearance?.colors?.colOnLayer1 ?? Appearance?.colors?.colOnLayer0 ?? "#cbc5ca"
     readonly property color _colSubtextBase: Appearance?.colors?.colSubtext ?? "#948f94"
-    readonly property color _colLyricBg: Appearance?.colors?.colLayer0 ?? "#161515"
+    readonly property color _colLayerBg: Appearance?.colors?.colLayer0 ?? "#161515"
 
-    readonly property string colPastHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.35).toString()
-    readonly property string colUpcomingHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.40).toString()
-    readonly property string colLitHex: ColorUtils.mix(root._colLitBase, root._colLyricBg, 0.85).toString()
+    // Active sung words use Quickshell's native bar foreground (colOnLayer1, matching clock and active bar items)
+    readonly property string colLitHex: (Appearance?.colors?.colOnLayer1 ?? "#cbc5ca").toString()
     readonly property string colActiveHex: colLitHex
-    readonly property string colBulletHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.40).toString()
-    readonly property string colTimerHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.60).toString()
-    readonly property string colWaitingGroupHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.60).toString()
-    readonly property string colWaitingSingleHex: colWaitingGroupHex
 
-    // Background vocal styling: subtle harmony glow so the independent background track
-    // remains visually distinguishable from the foreground lead.
-    readonly property string colBgLitHex: ColorUtils.mix(root.colLitHex, root._colLyricBg, 0.50).toString()
-    readonly property string colBgPastHex: ColorUtils.mix(root.colPastHex, root._colLyricBg, 0.50).toString()
-    readonly property string colBgUpcomingHex: ColorUtils.mix(root.colUpcomingHex, root._colLyricBg, 0.50).toString()
+    // Upcoming lyrics use a slightly darker shade of native subtext for clear, comfortable contrast
+    readonly property string colUpcomingHex: ColorUtils.mix(root._colSubtextBase, root._colLayerBg, 0.48).toString()
+
+    // Past sung lyrics gently soften further
+    readonly property string colPastHex: ColorUtils.mix(root._colSubtextBase, root._colLayerBg, 0.32).toString()
+
+    readonly property string colBulletHex: ColorUtils.mix(root._colSubtextBase, root._colLayerBg, 0.35).toString()
+    readonly property string colTimerHex: root.colUpcomingHex
+    readonly property string colWaitingGroupHex: root.colUpcomingHex
+    readonly property string colWaitingSingleHex: root.colUpcomingHex
+
+    // Background vocal harmonies: seamlessly follow system palette
+    readonly property string colBgLitHex: ColorUtils.mix(root.colLitHex, root._colLayerBg, 0.75).toString()
+    readonly property string colBgUpcomingHex: ColorUtils.mix(root._colSubtextBase, root._colLayerBg, 0.36).toString()
+    readonly property string colBgPastHex: ColorUtils.mix(root._colSubtextBase, root._colLayerBg, 0.24).toString()
 
     // Anything baked into the cached rich-text strings; a change forces a rebuild
     readonly property string displaySig: colPastHex + colUpcomingHex + colLitHex + colBulletHex + colTimerHex
@@ -351,6 +359,7 @@ Singleton {
         root._progScale = 1.0;
         root._sweeping = false;
         root._slowInterval = 100;
+        root.seekEpoch++;
     }
 
     function _clearDisplay() {
@@ -363,6 +372,7 @@ Singleton {
         root.currentLyricLineDim = "";
         root.currentLyricLineLit = "";
         root.currentLineProgress = 0.0;
+        root.currentLineDuration = 0.0;
         root.currentLeadProgress = 0.0;
         root.currentBgProgress = 0.0;
         root.currentLeadStartX = 0.0;
@@ -371,6 +381,7 @@ Singleton {
         root.currentBgWidth = 0.0;
         root.currentPastWidth = 0.0;
         root.currentLineHasBg = false;
+        root.currentSweepX = 0.0;
         root.currentGroupStartIdx = -1;
         root.isMultiLineGroup = false;
         root.allowHighlightSlide = false;
@@ -1176,6 +1187,7 @@ Singleton {
             root.lastKnownTimestamp = now;
             root.lastWordSyncPos = rawPos;
             root._rawIdx = -1;
+            root.seekEpoch++;
         } else if (Math.abs(diff) >= 0.04) {
             // Direct drift reconciliation
             root.lastKnownPosition = rawPos;
@@ -1195,6 +1207,7 @@ Singleton {
         root.lastKnownPosition = initPos;
         root.lastKnownTimestamp = Date.now();
         root.lastWordSyncPos = initPos;
+        root.seekEpoch++;
 
         // Title/artist/length usually update in quick succession; wait for them to settle
         // before spawning any network/process work.
@@ -1310,7 +1323,6 @@ Singleton {
             line._bgIdx = [];
             line._trackData0 = null;
             line._trackData1 = null;
-            line._hasBgTrack = false;
             line._totalWidth = root.measurePixelWidth(line.text);
             return;
         }
@@ -1385,7 +1397,6 @@ Singleton {
         let bounds = line._wordBounds || [];
         let lead = line._leadIdx || [];
         let bg = line._bgIdx || [];
-        line._hasBgTrack = bg.length > 0;
 
         function _makeTrackData(idx) {
             if (!idx || idx.length === 0) return null;
@@ -1834,10 +1845,12 @@ Singleton {
         let startFrac = 0.0, endFrac = 1.0;
         let curGroup = null;
         let progScale = 1.0;
+        let lineDur = 0.0;
 
         if (currIdx < 0) {
             // Before the first line
             nextText = groups[0].text;
+            lineDur = remaining > 0 ? remaining : 4.0;
             if (remaining > 0) {
                 let t = root._tagged(`(Intro ♪ ${remaining}s)`);
                 line = t.plain;
@@ -1856,6 +1869,12 @@ Singleton {
             let rawText = lines[g.startIdx].text;
             let hasNext = g.nextStartIdx < lines.length;
             if (hasNext) nextText = groups[g.nextStartIdx].text;
+            if (g && g.startIdx >= 0 && g.startIdx < lines.length) {
+                let startSec = lines[g.startIdx].time || 0.0;
+                let lastLine = lines[g.endIdx];
+                let endSec = hasNext ? lines[g.nextStartIdx].time : (lastLine.endTime || (lastLine.time + 4.0));
+                lineDur = Math.max(1.0, endSec - startSec);
+            }
 
             // Generalized repeat detection for any unit (single line, pair A•B, triplet A•B•C, etc.)
             let identicalCount = 1;
@@ -1971,6 +1990,7 @@ Singleton {
 
             switch (mode) {
             case root.mMark: {
+                if (remaining > 0) lineDur = remaining;
                 // Walk back past all consecutive ♪ to find the real previous lyric
                 let prevIdx = root._lastRealLine(lines, g.startIdx - 1);
                 let prevText = prevIdx >= 0 ? groups[prevIdx].text : "";
@@ -1997,6 +2017,7 @@ Singleton {
                 break;
             }
             case root.mWait: {
+                if (remaining > 0) lineDur = remaining;
                 if (remaining > 0) {
                     line = `${baseText} (♪ ${remaining}s)`;
                     rich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font> <font color="${timerCol}">(♪ ${remaining}s)</font>`;
@@ -2009,6 +2030,7 @@ Singleton {
                 break;
             }
             case root.mEndHoldMuted: {
+                lineDur = 4.5;
                 line = baseText;
                 rich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font>`;
                 dim = rich;
@@ -2016,6 +2038,7 @@ Singleton {
                 break;
             }
             case root.mEndHoldLast: {
+                lineDur = 4.5;
                 let lastText = lines[root._lastRealLine(lines, g.startIdx - 1)].text;
                 line = lastText;
                 rich = `<font color="${root.colWaitingSingleHex}">${root.escapeXml(lastText)}</font>`;
@@ -2024,6 +2047,7 @@ Singleton {
                 break;
             }
             case root.mOutro: {
+                lineDur = 4.5;
                 if (root.trackInfoPlain) {
                     line = `${root.trackInfoPlain} (Outro ♪)`;
                     rich = `${root.trackInfoRich} <font color="${timerCol}">(Outro ♪)</font>`;
@@ -2036,6 +2060,7 @@ Singleton {
                 break;
             }
             case root.mEndFallback: {
+                lineDur = 4.5;
                 let li = root._lastRealLine(lines, g.startIdx - 1);
                 if (li >= 0) {
                     line = lines[li].text;
@@ -2062,6 +2087,7 @@ Singleton {
         if (root.activeLineStartFraction !== startFrac) root.activeLineStartFraction = startFrac;
         if (root.activeLineEndFraction !== endFrac) root.activeLineEndFraction = endFrac;
         if (root.nextLyricLine !== nextText) root.nextLyricLine = nextText;
+        if (root.currentLineDuration !== lineDur) root.currentLineDuration = lineDur;
         root._curGroup = curGroup;
         root._progScale = progScale;
     }
@@ -2141,7 +2167,15 @@ Singleton {
 
         // Anything string-ish only changes when one of these does (at most ~1/s outside of line changes)
         let wasMulti = root.isMultiLineGroup;
-        if (mode !== root._mMode || currIdx !== root._mIdx || remaining !== root._mRem || started !== root._mStarted) {
+        let lineChanged = currIdx !== root._mIdx;
+        if (lineChanged) {
+            root.currentSweepX = 0.0;
+            root.currentLeadProgress = 0.0;
+            root.currentBgProgress = 0.0;
+            root.currentPastWidth = 0.0;
+            root.currentLineProgress = 0.0;
+        }
+        if (mode !== root._mMode || lineChanged || remaining !== root._mRem || started !== root._mStarted) {
             root._mMode = mode;
             root._mIdx = currIdx;
             root._mRem = remaining;
@@ -2192,8 +2226,17 @@ Singleton {
         }
 
         if (mode === root.mSing) {
-            progress = hasWS ? (root.calculateGroupSweep(root._curGroup, currIdx, wordSyncPos) * root._progScale) : 1.0;
-        } else if (mode === root.mEndHoldLast || mode === root.mEndHoldMuted) {
+            if (hasWS) {
+                progress = root.calculateGroupSweep(root._curGroup, currIdx, wordSyncPos) * root._progScale;
+            } else if (currIdx >= 0 && currIdx < n) {
+                // Line-synced lyrics have no word clock. Advance the bar scroll over the
+                // line's known duration instead of jumping straight to the end.
+                let g = groups[currIdx];
+                let startSec = lines[g.startIdx].time || 0.0;
+                let dur = root.currentLineDuration > 0 ? root.currentLineDuration : 3.0;
+                progress = Math.max(0.0, Math.min(1.0, (lineSyncPos - startSec) / dur));
+            }
+        } else if (mode === root.mWait || mode === root.mEndHoldLast || mode === root.mEndHoldMuted) {
             progress = 1.0;
         }
 
@@ -2206,6 +2249,16 @@ Singleton {
         if (root.currentBgWidth !== bgWidth) root.currentBgWidth = bgWidth;
         if (root.currentPastWidth !== pastWidth) root.currentPastWidth = pastWidth;
         if (root.currentLineHasBg !== hasBg) root.currentLineHasBg = hasBg;
+
+        let sweepX = 0.0;
+        if (mode === root.mSing && hasWS && curLine) {
+            let leadEdge = (leadWidth > 0 && leadProgress > 0) ? (leadStart + leadWidth * leadProgress) : 0.0;
+            let bgEdge = (hasBg && bgWidth > 0 && bgProgress > 0) ? (bgStart + bgWidth * bgProgress) : 0.0;
+            sweepX = Math.max(pastWidth, Math.max(leadEdge, bgEdge));
+        } else if (mode === root.mEndHoldLast || mode === root.mEndHoldMuted || mode === root.mWait) {
+            sweepX = curLine ? (curLine._totalWidth || 0.0) : 0.0;
+        }
+        if (root.currentSweepX !== sweepX) root.currentSweepX = sweepX;
 
         // Enable highlight slide one tick after entering a multi-line group so the entry itself isn't animated
         let shouldSlide = currIdx >= 0 && wasMulti;
