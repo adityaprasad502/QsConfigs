@@ -33,12 +33,16 @@ Singleton {
     property string currentLyricLineDim: ""
     property string currentLyricLineLit: ""
     property real currentLineProgress: 0.0
-    property real currentBgLineProgress: 0.0
-    property bool hasBgWords: false
-    property real leadWordsStartX: 0.0
-    property real leadWordsWidth: 0.0
-    property real bgWordsStartX: 0.0
-    property real bgWordsWidth: 0.0
+    // Independent per-track reveal geometry for word-synced lines. Background vocals
+    // sweep on their own clock instead of waiting for the foreground to finish.
+    property real currentLeadProgress: 0.0
+    property real currentBgProgress: 0.0
+    property real currentLeadStartX: 0.0
+    property real currentLeadWidth: 0.0
+    property real currentBgStartX: 0.0
+    property real currentBgWidth: 0.0
+    property real currentPastWidth: 0.0
+    property bool currentLineHasBg: false
     property int currentGroupStartIdx: -1
     property bool isMultiLineGroup: false
     property bool allowHighlightSlide: false
@@ -96,7 +100,8 @@ Singleton {
     readonly property string colWaitingGroupHex: ColorUtils.mix(root._colSubtextBase, root._colLyricBg, 0.60).toString()
     readonly property string colWaitingSingleHex: colWaitingGroupHex
 
-    // Background vocal styling: 50% subtle alpha/opacity harmony glow and upcoming tone
+    // Background vocal styling: subtle harmony glow so the independent background track
+    // remains visually distinguishable from the foreground lead.
     readonly property string colBgLitHex: ColorUtils.mix(root.colLitHex, root._colLyricBg, 0.50).toString()
     readonly property string colBgPastHex: ColorUtils.mix(root.colPastHex, root._colLyricBg, 0.50).toString()
     readonly property string colBgUpcomingHex: ColorUtils.mix(root.colUpcomingHex, root._colLyricBg, 0.50).toString()
@@ -337,11 +342,14 @@ Singleton {
         root.currentLyricLineDim = "";
         root.currentLyricLineLit = "";
         root.currentLineProgress = 0.0;
-        root.currentBgLineProgress = 0.0;
-        root.hasBgWords = false;
-        root.leadWordsWidth = 0.0;
-        root.bgWordsStartX = 0.0;
-        root.bgWordsWidth = 0.0;
+        root.currentLeadProgress = 0.0;
+        root.currentBgProgress = 0.0;
+        root.currentLeadStartX = 0.0;
+        root.currentLeadWidth = 0.0;
+        root.currentBgStartX = 0.0;
+        root.currentBgWidth = 0.0;
+        root.currentPastWidth = 0.0;
+        root.currentLineHasBg = false;
         root.currentGroupStartIdx = -1;
         root.isMultiLineGroup = false;
         root.allowHighlightSlide = false;
@@ -496,14 +504,14 @@ Singleton {
             if (tokens.length === 0) return words;
 
             if (lt > 0 && content.substring(0, lt).length > 0) {
-                words.push({ text: content.substring(0, lt), start: timeSec, end: timeSec + 0.05 });
+                words.push({ text: content.substring(0, lt), start: timeSec, end: timeSec + 0.05, track: 0 });
             }
 
-            let inBg = false;
             for (let t = 0; t < tokens.length; t++) {
                 let tok = tokens[t];
                 let startSec = 0;
                 let endSec = 0;
+                let track = 0;
 
                 if (tok.tag.includes(":")) {
                     let p = tok.tag.split(":");
@@ -512,6 +520,9 @@ Singleton {
                     let p = tok.tag.split(",");
                     startSec = timeSec + ((parseFloat(p[0]) || 0) / 1000.0);
                     endSec = startSec + ((parseFloat(p[1]) || 0) / 1000.0);
+                    // Third field is the render track: 0 = foreground, 1 = background.
+                    // Older providers omit it, which means foreground.
+                    track = p.length >= 3 ? (parseInt(p[2], 10) || 0) : 0;
                 } else {
                     let v = parseFloat(tok.tag) || 0;
                     startSec = ((v > 1000) ? v / 1000.0 : v) - offsetSec;
@@ -527,25 +538,12 @@ Singleton {
                     }
                 }
 
-                if (tok.text.indexOf("(") >= 0) inBg = true;
-                let isBgWord = inBg;
-                if (tok.text.indexOf(")") >= 0) inBg = false;
-
                 if (tok.text.length > 0) {
-                    words.push({ text: tok.text, start: Math.max(0, startSec), end: Math.max(0, endSec), isBg: isBgWord });
+                    words.push({ text: tok.text, start: Math.max(0, startSec), end: Math.max(0, endSec), track: track });
                 } else if (words.length > 0) {
                     let lastW = words[words.length - 1];
                     if (!lastW.end || lastW.end <= lastW.start) lastW.end = Math.max(0, startSec);
                 }
-            }
-            let hasLead = false;
-            let hasBg = false;
-            for (let w = 0; w < words.length; w++) {
-                if (words[w].isBg) hasBg = true;
-                else hasLead = true;
-            }
-            if (!hasLead || !hasBg) {
-                for (let w = 0; w < words.length; w++) words[w].isBg = false;
             }
         } else if (/\(\d+,\d+(?:,\d+)?\)/.test(content)) {
             let parenParts = content.split(/\((\d+),(\d+)(?:,\d+)?\)/);
@@ -561,23 +559,61 @@ Singleton {
                     let dur = parseFloat(parenParts[idx * 3 + 2]) || 0;
                     if (idx === num - 1 && trailing) wText += trailing;
                     let startSec = timeSec + (off / 1000.0);
-                    if (wText.length > 0) words.push({ text: wText, start: startSec, end: startSec + (dur / 1000.0) });
+                    if (wText.length > 0) words.push({ text: wText, start: startSec, end: startSec + (dur / 1000.0), track: 0 });
                 }
             } else {
                 // Format: (start,dur)word
                 if (parenParts[0].length > 0) {
-                    words.push({ text: parenParts[0], start: timeSec, end: timeSec + 0.05 });
+                    words.push({ text: parenParts[0], start: timeSec, end: timeSec + 0.05, track: 0 });
                 }
                 for (let idx = 1; idx < parenParts.length; idx += 3) {
                     let off = parseFloat(parenParts[idx]) || 0;
                     let dur = parseFloat(parenParts[idx + 1]) || 0;
                     let wText = parenParts[idx + 2] || "";
                     let startSec = timeSec + (off / 1000.0);
-                    if (wText.length > 0) words.push({ text: wText, start: startSec, end: startSec + (dur / 1000.0) });
+                    if (wText.length > 0) words.push({ text: wText, start: startSec, end: startSec + (dur / 1000.0), track: 0 });
                 }
             }
         }
         return words;
+    }
+
+    // Each render track is ordered independently: display order matches vocal order within
+    // a track. Merging tracks made background vocals wait for the foreground to finish, so
+    // track 0 (foreground) and track 1 (background) keep their own real timings here.
+    function _normalizeWordTimings(words, baseSec, limitSec) {
+        if (!words || words.length === 0) return;
+        let limit = Math.max(baseSec || 0, limitSec || 0);
+        let prevEnd = Math.max(0, baseSec || 0);
+        for (let i = 0; i < words.length; i++) {
+            let w = words[i];
+            let start = Math.max(0, w.start || 0);
+            let end = Math.max(0, w.end || 0);
+            if (end <= start) end = start + 0.05;
+
+            if (start < prevEnd) {
+                // Only shift words that would be skipped by a forward-only sweep.
+                if (end > prevEnd) {
+                    // The word is still sounding after the previous one: preserve the
+                    // remaining duration instead of compressing it.
+                    start = prevEnd;
+                    end = Math.min(end, limit);
+                    if (end <= start) end = Math.min(limit, start + 0.001);
+                } else {
+                    let start2 = Math.min(prevEnd, limit);
+                    let remainingWords = Math.max(1, words.length - i);
+                    let budget = Math.max(0, limit - start2);
+                    let slice = budget > 0
+                        ? Math.min(0.5, budget, Math.max(0.02, (budget / remainingWords) * 0.5))
+                        : 0.001;
+                    start = start2;
+                    end = start + Math.max(0.001, Math.min(Math.max(end - start, 0.001), slice));
+                }
+            }
+            w.start = start;
+            w.end = end;
+            prevEnd = Math.max(prevEnd, w.end);
+        }
     }
 
     // Raw text -> unsorted-safe entries { time, endTime, text, words, isWordSynced }
@@ -612,36 +648,24 @@ Singleton {
                 let words = root._parseWords(content, timeSec, offsetSec);
                 let isWordSynced = words.length > 0;
 
+                let headerEnd = lineDuration > 0 ? timeSec + lineDuration : 0;
                 let maxWordEnd = 0;
-                let hasLead = false;
-                let hasBg = false;
                 if (isWordSynced) {
-                    let inParen = false;
+                    let track0 = [];
+                    let track1 = [];
                     for (let w = 0; w < words.length; w++) {
-                        let wObj = words[w];
-                        if (wObj.text.includes("(")) inParen = true;
-                        wObj.isBg = inParen;
-                        if (wObj.text.includes(")")) inParen = false;
-                        if (wObj.isBg) hasBg = true;
-                        else hasLead = true;
-                        if (wObj.end > maxWordEnd) maxWordEnd = wObj.end;
+                        if ((words[w].track || 0) === 1) track1.push(words[w]);
+                        else track0.push(words[w]);
                     }
-                }
-
-                if (isWordSynced && hasLead && hasBg) {
-                    for (let w = words.length - 1; w > 0; w--) {
-                        if (words[w].isBg && !words[w - 1].isBg && !words[w - 1].isSeparator) {
-                            let prevLead = words[w - 1];
-                            prevLead.text = prevLead.text.replace(/\s+$/, "");
-                            let sepWord = {
-                                text: " • ",
-                                start: prevLead.end,
-                                end: prevLead.end,
-                                isBg: false,
-                                isSeparator: true
-                            };
-                            words.splice(w, 0, sepWord);
-                        }
+                    let limit = headerEnd;
+                    for (let w = 0; w < words.length; w++) {
+                        if ((words[w].end || 0) > limit) limit = words[w].end || 0;
+                    }
+                    root._normalizeWordTimings(track0, timeSec, limit);
+                    root._normalizeWordTimings(track1, timeSec, limit);
+                    maxWordEnd = 0;
+                    for (let w = 0; w < words.length; w++) {
+                        if (words[w].end > maxWordEnd) maxWordEnd = words[w].end;
                     }
                 }
 
@@ -649,27 +673,21 @@ Singleton {
                     ? words.map(w => w.text).join("")
                     : content.replace(/<[^>]+>/g, "").replace(/\(\d+,\d+(?:,\d+)?\)/g, "");
                 cleanText = cleanText.replace(/\s+/g, " ").trim();
-                if (!isWordSynced && cleanText.includes("(") && !cleanText.includes("•")) {
-                    cleanText = cleanText.replace(/([^\s•])\s*(\([^\)]*\))/g, "$1 • $2");
-                }
                 if (cleanText.length === 0) {
                     cleanText = "♪";
                     isWordSynced = false;
                 }
 
                 let lineEnd = (isWordSynced && maxWordEnd > 0)
-                    ? Math.max(maxWordEnd, (lineDuration > 0 ? timeSec + lineDuration : 0))
-                    : (lineDuration > 0 ? timeSec + lineDuration : 0);
-
-                let hasBgWords = isWordSynced && hasLead && hasBg;
+                    ? Math.max(maxWordEnd, headerEnd)
+                    : headerEnd;
 
                 entries.push({
                     time: timeSec,
                     endTime: lineEnd,
                     text: cleanText,
                     isWordSynced: isWordSynced,
-                    words: isWordSynced ? words : null,
-                    hasBgWords: hasBgWords
+                    words: isWordSynced ? words : null
                 });
             }
         }
@@ -789,11 +807,24 @@ Singleton {
 
     function _isPerformerTag(t, ctx) {
         if (!ctx.hasMeta) return false;
-        let m = t.match(/^\s*[\[\(（【]?\s*([A-Za-z0-9\s._'-]+?)\s*[\]\)）】]?\s*[:：]\s*$/);
+        let m = t.match(/^\s*[\[\(（【]?\s*([A-Za-z0-9\s._'\/&+-]+?)\s*[\]\)）】]?\s*[:：]\s*$/);
         if (!m) return false;
         let v = root._normVariants(m[1].trim());
         for (let i = 0; i < v.length; i++) {
             if (ctx.meta[v[i]]) return true;
+        }
+        let parts = m[1].trim().split(/\s*(?:,|;|&|\/|\+|、|\bfeat\.?|\bft\.?|\band\b)\s*/i);
+        if (parts.length > 1) {
+            let allMatch = true;
+            for (let p = 0; p < parts.length; p++) {
+                let pv = root._normVariants(parts[p]);
+                let ok = false;
+                for (let i = 0; i < pv.length; i++) {
+                    if (ctx.meta[pv[i]]) { ok = true; break; }
+                }
+                if (!ok) { allMatch = false; break; }
+            }
+            if (allMatch) return true;
         }
         return false;
     }
@@ -1254,12 +1285,14 @@ Singleton {
         line._wiBg = 0;
         if (!line.words || line.words.length === 0) {
             line._wordBounds = null;
-            if (line.text.indexOf("(") >= 0 && line.text.indexOf(")") >= 0) {
-                styledMetrics.text = root.formatLineRich(line.text, root.colLitHex, root.colBgLitHex);
-                line._totalWidth = styledMetrics.implicitWidth;
-            } else {
-                line._totalWidth = root.measurePixelWidth(line.text);
-            }
+            line._leadIdx = [];
+            line._bgIdx = [];
+            line._leadStartX = 0;
+            line._leadEndX = 0;
+            line._bgStartX = 0;
+            line._bgEndX = 0;
+            line._hasBgTrack = false;
+            line._totalWidth = root.measurePixelWidth(line.text);
             return;
         }
         let joined = "";
@@ -1267,6 +1300,81 @@ Singleton {
         let w = root.measurePixelWidth(joined);
         line._totalWidth = w > 0 ? w : root.measurePixelWidth(line.text);
         root._computeBounds(line);
+        root._assignTrackRegions(line);
+
+        // Repair squashed tail words or words whose durations were artificially squashed
+        // (e.g. background vocal clamped to next line boundary <= 25ms, or single tail word < 120ms).
+        let modified = false;
+        for (let track = 0; track <= 1; track++) {
+            let idx = (track === 1 ? line._bgIdx : line._leadIdx) || [];
+            if (idx.length === 0) continue;
+            let tw = [];
+            for (let i = 0; i < idx.length; i++) tw.push(line.words[idx[i]]);
+
+            let hasSquashed = false;
+            if (tw.length === 1) {
+                let dur = tw[0].end - tw[0].start;
+                if (dur < 0.120) hasSquashed = true;
+            } else {
+                for (let i = 0; i < tw.length; i++) {
+                    let dur = tw[i].end - tw[i].start;
+                    if (dur <= 0.025 || (i > 0 && tw[i].start <= tw[i - 1].start)) {
+                        hasSquashed = true;
+                        break;
+                    }
+                }
+            }
+
+            if (hasSquashed) {
+                modified = true;
+                if (tw.length === 1) {
+                    tw[0].start = Math.max(line.time, tw[0].end - 0.200);
+                } else {
+                    let trackStart = tw[0].start;
+                    let trackEnd = tw[tw.length - 1].end;
+                    let totalSpan = Math.max(0.100, trackEnd - trackStart);
+                    let weights = [];
+                    let totalWeight = 0;
+                    for (let i = 0; i < tw.length; i++) {
+                        let wt = Math.max(1, (tw[i].text || "").trim().length);
+                        weights.push(wt);
+                        totalWeight += wt;
+                    }
+                    let cur = trackStart;
+                    for (let i = 0; i < tw.length; i++) {
+                        let wDur = (weights[i] / totalWeight) * totalSpan;
+                        tw[i].start = cur;
+                        tw[i].end = (i === tw.length - 1) ? trackEnd : cur + wDur;
+                        cur = tw[i].end;
+                    }
+                }
+            }
+        }
+        if (modified) {
+            root._computeBounds(line);
+            root._assignTrackRegions(line);
+        }
+    }
+
+    // Split a line's word bounds into its foreground (track 0) and background (track 1)
+    // regions. Both regions are measured against the full rendered line, so their pixel
+    // spans can be clipped independently without shifting the text.
+    function _assignTrackRegions(line) {
+        let words = line.words || [];
+        let bounds = line._wordBounds || [];
+        let lead = [];
+        let bg = [];
+        for (let i = 0; i < words.length; i++) {
+            if ((words[i].track || 0) === 1) bg.push(i);
+            else lead.push(i);
+        }
+        line._leadIdx = lead;
+        line._bgIdx = bg;
+        line._leadStartX = lead.length > 0 ? bounds[lead[0]].startX : 0;
+        line._leadEndX = lead.length > 0 ? bounds[lead[lead.length - 1]].endX : 0;
+        line._bgStartX = bg.length > 0 ? bounds[bg[0]].startX : line._leadEndX;
+        line._bgEndX = bg.length > 0 ? bounds[bg[bg.length - 1]].endX : line._bgStartX;
+        line._hasBgTrack = bg.length > 0;
     }
 
     // Per word: pixel position after each character (cx) and the cumulative share of the word's
@@ -1304,48 +1412,6 @@ Singleton {
             prevW = endX;
         }
         line._wordBounds = bounds;
-
-        let leadWords = [];
-        let leadBounds = [];
-        let bgWords = [];
-        let bgBounds = [];
-        for (let i = 0; i < words.length; i++) {
-            if (words[i].isSeparator) {
-                continue;
-            }
-            if (words[i].isBg) {
-                bgWords.push(words[i]);
-                bgBounds.push(bounds[i]);
-            } else {
-                leadWords.push(words[i]);
-                leadBounds.push(bounds[i]);
-            }
-        }
-
-        if (leadWords.length > 0 && bgWords.length > 0) {
-            line.hasBgWords = true;
-            line.leadWords = leadWords;
-            line.leadBounds = leadBounds;
-            line.leadStartX = leadBounds[0].startX;
-            line.leadWidth = Math.max(0, leadBounds[leadBounds.length - 1].endX - line.leadStartX);
-            line.bgWords = bgWords;
-            line.bgBounds = bgBounds;
-            line.bgStartX = bgBounds[0].startX;
-            line.bgEndX = bgBounds[bgBounds.length - 1].endX;
-            line.bgWidth = Math.max(0, line.bgEndX - line.bgStartX);
-        } else {
-            line.hasBgWords = false;
-            line.leadWords = words;
-            line.leadBounds = bounds;
-            line.leadStartX = 0;
-            line.leadWidth = prevW;
-            line.bgWords = [];
-            line.bgBounds = [];
-            line.bgStartX = 0;
-            line.bgEndX = 0;
-            line.bgWidth = 0;
-        }
-
         return bounds;
     }
 
@@ -1408,22 +1474,55 @@ Singleton {
 
     function getLineSweepFraction(line, currentSec) {
         if (!line) return 0.0;
-        let bounds = line._wordBounds || root._computeBounds(line);
-        if (line.hasBgWords && line.leadWords && line.leadBounds) {
-            return root._sweepWordSubset(line.leadWords, line.leadBounds, line.leadWidth, line.leadStartX || 0, currentSec, "_wiLead", line);
-        }
         let totalW = line._totalWidth || 0;
         if (totalW <= 0) return 0.0;
         let words = line.words;
         if (!words || words.length === 0) return 1.0;
+        let bounds = line._wordBounds || root._computeBounds(line);
         return root._sweepWordSubset(words, bounds, totalW, 0, currentSec, "_wi", line);
     }
 
-    function getBgLineSweepFraction(line, currentSec) {
-        if (!line) return 0.0;
+    // Word subset + bounds for one render track, in the line's own pixel coordinates.
+    function _lineTrackData(line, track) {
+        if (!line || !line.words || line.words.length === 0) return null;
+        let idx = (track === 1 ? line._bgIdx : line._leadIdx) || [];
+        if (idx.length === 0) return null;
         let bounds = line._wordBounds || root._computeBounds(line);
-        if (!line.hasBgWords || !line.bgWords || !line.bgBounds || line.bgWidth <= 0) return 0.0;
-        return root._sweepWordSubset(line.bgWords, line.bgBounds, line.bgWidth, line.bgStartX, currentSec, "_wiBg", line);
+        let words = [];
+        let bs = [];
+        for (let i = 0; i < idx.length; i++) {
+            words.push(line.words[idx[i]]);
+            bs.push(bounds[idx[i]]);
+        }
+        let startX = bs[0].startX;
+        let endX = bs[bs.length - 1].endX;
+        return {
+            words: words,
+            bounds: bs,
+            startX: startX,
+            endX: endX,
+            width: Math.max(0.0, endX - startX)
+        };
+    }
+
+    // Progress within one track's region (0 = untouched, 1 = fully swept).
+    function getLineTrackProgress(line, track, currentSec) {
+        let d = root._lineTrackData(line, track);
+        if (!d) return 0.0;
+        if (d.width <= 0) return 1.0;
+        let key = track === 1 ? "_wiBg" : "_wiLead";
+        return root._sweepWordSubset(d.words, d.bounds, d.width, d.startX, currentSec, key, line);
+    }
+
+    // Absolute x of a line inside its (possibly multi-line) display group.
+    function getGroupLineStartX(g, lineIdx, lines) {
+        if (!g) return 0.0;
+        if (lineIdx < g.startIdx || lineIdx > g.endIdx) return 0.0;
+        let b = root._getGroupBounds(g, lines);
+        if (!b || b.length <= 0) return 0.0;
+        let off = lineIdx - g.startIdx;
+        if (off < 0 || off >= b.length) return 0.0;
+        return b[off].startX || 0.0;
     }
 
     function calculateGroupSweep(currGroup, currIdx, currentSec) {
@@ -1566,36 +1665,33 @@ Singleton {
             let currentGroupWidth = currentLine._totalWidth || 0;
             let j = i + 1;
 
-            // Never group instrumental markers, repeat sequences, lines with background vocals, or lines that are already wide (>62% of bar)
+            // Never group instrumental markers or repeat sequences
             let isRepeat = isLineRepeat(i);
             let isInstrumental = groupText === "♪";
             let isAlreadyLong = currentGroupWidth > maxAllowedPx * 0.62;
-            let hasBg = currentLine.hasBgWords || currentLine.text.startsWith("(") || (currentLine.text.indexOf("(") >= 0 && currentLine.text.indexOf(")") >= 0);
 
-            if (!isInstrumental && !isRepeat && !isAlreadyLong && !hasBg) {
+            if (!isInstrumental && !isRepeat && !isAlreadyLong) {
                 while (j < lines.length) {
                     let nextLine = lines[j];
                     let nextText = nextLine.text;
 
-                    // Stop if next item is an instrumental pause, repeat sequence, or has background vocals
-                    if (nextText === "♪" || isLineRepeat(j) || nextLine.hasBgWords || nextLine.text.startsWith("(") || (nextLine.text.indexOf("(") >= 0 && nextLine.text.indexOf(")") >= 0)) break;
+                    // Stop if next item is an instrumental pause or repeat sequence
+                    if (nextText === "♪" || isLineRepeat(j)) break;
 
                     let prevLine = lines[j - 1];
                     let prevEnd = prevLine.endTime || (prevLine.time + 3.0);
                     let silenceGap = nextLine.time - prevEnd;
+
                     let lineStartInterval = nextLine.time - prevLine.time;
                     let totalSpan = nextLine.time - lines[start].time;
-
-                    // 1. Natural rhythm & vocal rest check
                     if (silenceGap > 1.6 || lineStartInterval > 5.0 || totalSpan > 9.5) break;
 
-                    // 2. Sentence / punctuation boundary check
                     let prevTrimmed = prevLine.text.trim();
                     let hasTerminalPunctuation = /[.?!:]$/.test(prevTrimmed) && !/\.\.\.$/.test(prevTrimmed);
                     let bothBrief = (prevTrimmed.length <= 16) && (nextText.trim().length <= 16);
                     if (hasTerminalPunctuation && !bothBrief) break;
 
-                    // 3. Triplet restraint
+                    // Triplet restraint
                     let currentCount = (j - start) + 1;
                     if (currentCount > 3) break;
                     if (currentCount === 3) {
@@ -1605,13 +1701,13 @@ Singleton {
                         if (!line1Short || !line2Short || !line3Short) break;
                     }
 
-                    // 4. Countdown timer reserve
+                    // Countdown timer reserve
                     let nextAfter = (j + 1 < lines.length) ? lines[j + 1] : null;
                     let nextAfterGap = nextAfter ? (nextAfter.time - (nextLine.endTime || nextLine.time + 3.0)) : 999;
                     let hasTimer = (nextAfterGap > 4.5) || (nextAfter && nextAfter.text === "♪");
                     let reserve = hasTimer ? 65 : 20;
 
-                    // 5. Pixel width check using precompiled line lengths
+                    // Pixel width check using precompiled line lengths
                     let candidateWidth = currentGroupWidth + bulletW + (nextLine._totalWidth || 0);
                     let maxTargetWidth = (currentCount === 3) ? (maxAllowedPx * 0.85) : maxAllowedPx;
                     if (candidateWidth > maxTargetWidth - reserve) break;
@@ -1978,35 +2074,6 @@ Singleton {
         root._rawIdx = rawIdx;
         let currIdx = rawIdx;
 
-        // Anti-cut-off protection: if lead-in looked ahead to the next line, do not switch early
-        // while the previous line's syllables are still actively being sung.
-        // But NEVER hold back if audio position has actually reached the next line's start time!
-        while (currIdx > 0 && lines[currIdx - 1].isWordSynced && currentPos < lines[currIdx].time) {
-            let prev = lines[currIdx - 1];
-            let prevEnd = prev.endTime || 0;
-            if (prevEnd > 0 && currentPos < prevEnd) currIdx--;
-            else break;
-        }
-
-        // Apple Music background vocal prioritization (spicy-ex pattern):
-        // If current index lands on a background-only vocal line, but an active lead vocal line
-        // is still actively being sung (currentPos < lead.endTime), keep that lead vocal active!
-        if (currIdx >= 0 && lines[currIdx].text.startsWith("(") && lines[currIdx].text.endsWith(")")) {
-            let k = currIdx - 1;
-            while (k >= 0 && (currentPos - lines[k].time) < 15.0) {
-                let cand = lines[k];
-                let isCandBg = cand.text.startsWith("(") && cand.text.endsWith(")");
-                if (!isCandBg && cand.text !== "♪") {
-                    let candEnd = cand.endTime || 0;
-                    if (candEnd > 0 && currentPos < candEnd) {
-                        currIdx = k;
-                    }
-                    break;
-                }
-                k--;
-            }
-        }
-
         let mode = root.mIntro;
         let remaining = 0;
         let started = false;
@@ -2065,41 +2132,71 @@ Singleton {
         }
 
         let progress = 0.0;
-        let bgProgress = 0.0;
-        let hasBg = false;
         let curLine = (currIdx >= 0 && currIdx < n) ? lines[currIdx] : null;
 
-        if (mode === root.mSing) {
-            if (curLine && curLine.hasBgWords) {
-                hasBg = true;
-                progress = hasWS ? root.getLineSweepFraction(curLine, wordSyncPos) : 1.0;
-                bgProgress = hasWS ? root.getBgLineSweepFraction(curLine, wordSyncPos) : 1.0;
-                if (root.leadWordsStartX !== (curLine.leadStartX || 0)) root.leadWordsStartX = (curLine.leadStartX || 0);
-                if (root.leadWordsWidth !== curLine.leadWidth) root.leadWordsWidth = curLine.leadWidth;
-                if (root.bgWordsStartX !== curLine.bgStartX) root.bgWordsStartX = curLine.bgStartX;
-                if (root.bgWordsWidth !== curLine.bgWidth) root.bgWordsWidth = curLine.bgWidth;
+        // Independent fg/bg reveal geometry. Past lines in a multi-line group are fully
+        // lit via `pastWidth`; the active line exposes a foreground clip and, when present,
+        // a background clip that advances on its own timestamps.
+        let leadProgress = 0.0, bgProgress = 0.0;
+        let leadStart = 0.0, leadWidth = 0.0;
+        let bgStart = 0.0, bgWidth = 0.0;
+        let pastWidth = 0.0, hasBg = false;
+        if (mode === root.mSing && hasWS && curLine) {
+            let base = root.getGroupLineStartX(root._curGroup, currIdx, lines);
+            pastWidth = base;
+            if (!curLine.isWordSynced) {
+                // A non-word-synced line inside a word-synced payload (marker/unmatched
+                // line) has no sidereal sweep; show it fully lit when active.
+                leadStart = base;
+                leadWidth = curLine._totalWidth || 0;
+                leadProgress = 1.0;
             } else {
-                hasBg = false;
-                progress = hasWS ? (root.calculateGroupSweep(root._curGroup, currIdx, wordSyncPos) * root._progScale) : 1.0;
-                bgProgress = 0.0;
+                let d0 = root._lineTrackData(curLine, 0);
+                if (d0) {
+                    leadStart = base + d0.startX;
+                    leadWidth = d0.width;
+                    leadProgress = root.getLineTrackProgress(curLine, 0, wordSyncPos);
+                } else {
+                    leadProgress = 1.0;
+                }
+                let d1 = root._lineTrackData(curLine, 1);
+                if (d1) {
+                    hasBg = true;
+                    bgStart = base + d1.startX;
+                    bgWidth = d1.width;
+                    bgProgress = root.getLineTrackProgress(curLine, 1, wordSyncPos);
+                }
             }
-        } else if (mode === root.mEndHoldLast || mode === root.mEndHoldMuted) {
-            progress = 1.0;
-            bgProgress = 1.0;
         }
 
-        if (root.hasBgWords !== hasBg) root.hasBgWords = hasBg;
-        if (root.currentBgLineProgress !== bgProgress) root.currentBgLineProgress = bgProgress;
+        if (mode === root.mSing) {
+            progress = hasWS ? (root.calculateGroupSweep(root._curGroup, currIdx, wordSyncPos) * root._progScale) : 1.0;
+        } else if (mode === root.mEndHoldLast || mode === root.mEndHoldMuted) {
+            progress = 1.0;
+        }
+
         if (root.currentLineProgress !== progress) root.currentLineProgress = progress;
+        if (root.currentLeadProgress !== leadProgress) root.currentLeadProgress = leadProgress;
+        if (root.currentBgProgress !== bgProgress) root.currentBgProgress = bgProgress;
+        if (root.currentLeadStartX !== leadStart) root.currentLeadStartX = leadStart;
+        if (root.currentLeadWidth !== leadWidth) root.currentLeadWidth = leadWidth;
+        if (root.currentBgStartX !== bgStart) root.currentBgStartX = bgStart;
+        if (root.currentBgWidth !== bgWidth) root.currentBgWidth = bgWidth;
+        if (root.currentPastWidth !== pastWidth) root.currentPastWidth = pastWidth;
+        if (root.currentLineHasBg !== hasBg) root.currentLineHasBg = hasBg;
 
         // Enable highlight slide one tick after entering a multi-line group so the entry itself isn't animated
         let shouldSlide = currIdx >= 0 && wasMulti;
         if (root.allowHighlightSlide !== shouldSlide) root.allowHighlightSlide = shouldSlide;
 
-        // Scheduling: frame-rate only while the sweep is visibly moving
+        // Scheduling: frame-rate only while either render track is still visibly moving.
+        // Using the group sweep alone could stop the clock while a background tail is
+        // still being revealed, so completion is checked per track.
         let nextT = currIdx < 0 ? (lines[0].time - root.firstLineLead) : (currIdx + 1 < n ? lines[currIdx + 1].time : -1);
         let timeToNext = nextT >= 0 ? (nextT - lineSyncPos) : 999;
-        let sweeping = hasWS && mode === root.mSing && !((progress >= 0.9995 && (!hasBg || bgProgress >= 0.9995)) && timeToNext > 0.3);
+        let tracksDone = !curLine
+            || (leadProgress >= 0.9995 && (!hasBg || bgProgress >= 0.9995));
+        let sweeping = hasWS && mode === root.mSing && !(tracksDone && timeToNext > 0.3);
         if (root._sweeping !== sweeping) root._sweeping = sweeping;
         if (!sweeping) {
             let wake = Math.max(16, Math.min(100, Math.floor(timeToNext * 1000) - 4));

@@ -679,6 +679,324 @@ def fetch_p3(title, artist="", target_duration=0, **kwargs):
         return None
 
 # ==============================================================================
+# Shared vocal segment -> enhanced-LRC line builder (providers 4 and 5)
+# ==============================================================================
+# A segment is {"st": ms, "en": ms, "syls": [...], "is_bg": bool}.
+# A syllable is {"Text": str, "StartTime": seconds, "EndTime": seconds,
+#                "IsPartOfWord": bool}.
+
+def _syl_time_ms(s):
+    try:
+        return int(round(float(s.get("StartTime", 0)) * 1000))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _syl_end_ms(s, st):
+    try:
+        return max(st + 1, int(round(float(s.get("EndTime", 0)) * 1000)))
+    except (TypeError, ValueError):
+        return st + 1
+
+
+def _format_syls(syls, line_st_ms, wrap_parens=False, prefix="", max_end_ms=None, track=0):
+    """Encode syllables as ``<off,dur,track>text`` tokens.
+
+    ``track`` 0 is the foreground line, 1 is the independent background/secondary
+    layer. The QML side gives each track its own clip sweep, so background vocals no
+    longer wait for the foreground to finish.
+
+    Separators are emitted exactly once between syllables/words so that the text the
+    QML side joins from these tokens is identical to its cleaned display text. A
+    doubled space would desynchronise the pixel sweep from the rendered glyphs.
+
+    ``IsPartOfWord`` means "this syllable continues into the following syllable", so a
+    trailing space is added only when the *current* syllable is not part of a word.
+    """
+    if not syls:
+        return ""
+
+    prev_st = line_st_ms
+    raw_items = []
+    pending_space = False
+    for idx, s in enumerate(syls):
+        raw = str(s.get("Text", "") or "")
+        core = raw.strip()
+        is_part = bool(s.get("IsPartOfWord", False))
+        if not core:
+            if not is_part:
+                pending_space = True
+            continue
+
+        w_st = max(prev_st, _syl_time_ms(s))
+        w_en = _syl_end_ms(s, w_st)
+        prev_st = w_st
+        raw_items.append((w_st, w_en, core, is_part, pending_space, idx))
+        pending_space = False
+
+    if not raw_items:
+        return ""
+
+    if max_end_ms is not None and raw_items[-1][1] > max_end_ms:
+        first_st = raw_items[0][0]
+        last_en = raw_items[-1][1]
+        orig_span = max(1, last_en - first_st)
+        if first_st < max_end_ms:
+            avail_span = max(len(raw_items) * 15, max_end_ms - first_st)
+            base_st = first_st
+        else:
+            avail_span = max(len(raw_items) * 15, 100)
+            base_st = max(line_st_ms, max_end_ms - avail_span)
+
+        cur_st = base_st
+        scaled_items = []
+        for i, (st, en, core, is_part, p_space, idx) in enumerate(raw_items):
+            frac_st = (st - first_st) / orig_span
+            frac_en = (en - first_st) / orig_span
+            new_st = max(cur_st, base_st + int(round(frac_st * avail_span)))
+            if i == len(raw_items) - 1:
+                new_en = max(new_st + 1, max_end_ms)
+            else:
+                new_en = max(new_st + 1, base_st + int(round(frac_en * avail_span)))
+            scaled_items.append((new_st, new_en, core, is_part, p_space, idx))
+            cur_st = new_en
+        raw_items = scaled_items
+
+    parts = []
+    for i, (w_st, w_en, core, is_part, p_space, idx) in enumerate(raw_items):
+        w_dur = max(1, w_en - w_st)
+        if not parts:
+            if wrap_parens and not core.startswith("("):
+                core = "(" + core
+            txt = (prefix + core) if prefix else core
+        else:
+            txt = core
+            if p_space and not parts[-1][2].endswith(" "):
+                txt = " " + txt
+
+        if idx + 1 < len(syls) and not is_part and not txt.endswith(" "):
+            txt += " "
+
+        parts.append((max(0, w_st - line_st_ms), w_dur, txt))
+
+    if not parts:
+        return ""
+
+    # Trim a trailing separator from the final token; the next chunk adds its own.
+    # A closing paren is applied afterwards so a trailing empty syllable cannot skip it.
+    last_off, last_dur, last_txt = parts[-1]
+    last_txt = last_txt.rstrip()
+    if wrap_parens and not last_txt.endswith(")"):
+        last_txt += ")"
+    parts[-1] = (last_off, last_dur, last_txt)
+
+    return "".join(f"<{off},{dur},{track}>{txt}" for off, dur, txt in parts)
+
+
+def _segments_to_lines(segments, min_merge_overlap_ms=50):
+    """Build a strictly non-overlapping enhanced-LRC timeline from vocal segments.
+
+    Lines are clustered by their **foreground** intervals only. A background vocal
+    that outlives its line is attached to that line and its sweep cap is the next
+    line's start; it never causes the following foreground line to be merged in.
+    That keeps lines short instead of chaining a whole verse into one giant line.
+
+    Within a line, track 0 is the foreground and track 1 is the independent
+    background/secondary layer. Overlapping foreground lines are still merged (so no
+    text is lost), with the extra leads placed on track 1 as bullets.
+    """
+    segs = []
+    for s in segments or []:
+        syls = s.get("syls") or []
+        if not syls:
+            continue
+        try:
+            st = int(round(float(s.get("st", 0))))
+            en = int(round(float(s.get("en", st))))
+        except (TypeError, ValueError):
+            st, en = 0, 0
+        syl_st = min((_syl_time_ms(x) for x in syls), default=st)
+        syl_en = max((_syl_end_ms(x, _syl_time_ms(x)) for x in syls), default=en)
+        st = max(0, min(st, syl_st))
+        en = max(en, syl_en)
+        if en <= st:
+            en = st + 1
+        segs.append({
+            "st": st,
+            "en": en,
+            "syl_st": syl_st,
+            "syl_en": syl_en,
+            "syls": syls,
+            "is_bg": bool(s.get("is_bg")),
+            # Source grouping carried from the provider (TTML paragraphs). Providers
+            # that emit flat segments leave this None and the timeline decides below.
+            "grp": s.get("grp"),
+        })
+
+    if not segs:
+        return None
+
+    leads = sorted(
+        [s for s in segs if not s["is_bg"]],
+        key=lambda s: (s["st"], -(s["syl_en"] - s["st"])),
+    )
+    bgs = [s for s in segs if s["is_bg"]]
+
+    # Cluster foreground vocals by their real syllable intervals. Declared line ends
+    # are ignored here so a long background tail cannot chain the next lead in.
+    clusters = []
+    for s in leads:
+        if clusters:
+            cur = clusters[-1]
+            overlap = cur["lead_end"] - s["st"]
+            if overlap >= min_merge_overlap_ms:
+                cur["leads"].append(s)
+                cur["lead_end"] = max(cur["lead_end"], s["syl_en"])
+                cur["vocal_start"] = min(cur["vocal_start"], s["syl_st"])
+                cur["en"] = max(cur["en"], s["en"])
+                if s.get("grp") is not None:
+                    cur["grps"].add(s["grp"])
+                continue
+        clusters.append({
+            "leads": [s],
+            "bgs": [],
+            "lead_start": s["st"],
+            # The lead's actual vocal span (not the provider's header time) drives
+            # background attachment, so a header that starts early cannot steal a
+            # background that belongs to the neighbouring line.
+            "vocal_start": s["syl_st"],
+            "lead_end": s["syl_en"],
+            "en": s["en"],
+            "grps": {s["grp"]} if s.get("grp") is not None else set(),
+        })
+
+    # Attach each background to the foreground line it belongs to. A background sung
+    # in the silent gap between two lines is an echo of the line just sung or a
+    # pickup into the next one; the wrong pick makes it visibly ride on the
+    # neighbouring line (e.g. "(Baby, almost died)" echoing "Thought I almost died
+    # in my dream again" landed on the "Fightin' for my life" line because its tail
+    # grazed that line by 22ms). Priorities:
+    #   1. the lead from the same source paragraph (TTML <p> grouping is authoritative),
+    #   2. the lead whose actual vocal span contains the background's start,
+    #   3. the lead it overlaps substantially (a tail that only brushes a
+    #      neighbouring line must not steal it),
+    #   4. the nearest lead by start distance, when the background falls between
+    #      two leads (echo -> previous line, pickup -> next line).
+    # Attachment never merges the background into the line's lead interval.
+    standalone_bgs = []
+    for b in bgs:
+        target = None
+        grp = b.get("grp")
+        if grp is not None:
+            for c in clusters:
+                if grp in c.get("grps", ()):
+                    target = c
+                    break
+        if target is None:
+            for c in clusters:
+                if c["vocal_start"] <= b["syl_st"] < c["lead_end"]:
+                    target = c
+                    break
+        if target is None:
+            bg_dur = max(1, b["syl_en"] - b["syl_st"])
+            min_sig = max(min_merge_overlap_ms, int(0.05 * bg_dur))
+            best_ov = 0
+            for c in clusters:
+                ov = min(b["syl_en"], c["lead_end"]) - max(b["syl_st"], c["vocal_start"])
+                if ov > best_ov:
+                    best_ov = ov
+                    target = c
+            if best_ov < min_sig:
+                target = None
+        if target is None:
+            prev_c = None
+            next_c = None
+            for c in clusters:
+                if c["lead_end"] <= b["syl_st"] and (prev_c is None or c["lead_end"] > prev_c["lead_end"]):
+                    prev_c = c
+                if c["vocal_start"] >= b["syl_st"] and (next_c is None or c["vocal_start"] < next_c["vocal_start"]):
+                    next_c = c
+            if prev_c is not None and next_c is not None:
+                d_prev = b["syl_st"] - prev_c["lead_end"]
+                d_next = next_c["vocal_start"] - b["syl_st"]
+                target = prev_c if d_prev <= d_next else next_c
+        if target is not None:
+            target["bgs"].append(b)
+            target["en"] = max(target["en"], b["en"])
+        else:
+            standalone_bgs.append(b)
+
+    for b in standalone_bgs:
+        clusters.append({
+            "leads": [],
+            "bgs": [b],
+            "lead_start": b["st"],
+            "lead_end": b["syl_en"],
+            "en": b["en"],
+        })
+
+    # A pre-vocal background may start before its foreground line; include that in the
+    # display start so the background is not shifted forward. Sort by the final start.
+    for c in clusters:
+        c["line_st"] = min([c["lead_start"]] + [b["st"] for b in c["bgs"]])
+    clusters.sort(key=lambda c: c["line_st"])
+
+    out = []
+    for idx, c in enumerate(clusters):
+        line_st = c["line_st"]
+        all_segs = c["leads"] + c["bgs"]
+        line_en = max((s["syl_en"] for s in all_segs), default=line_st + 1)
+        line_en = max(line_st + 1, line_en)
+
+        # Keep the enhanced-LRC timeline strictly sequential. A background tail is
+        # capped at the next line; within the line it still sweeps independently.
+        if idx + 1 < len(clusters):
+            next_st = clusters[idx + 1]["line_st"]
+            if line_en > next_st:
+                line_en = max(line_st + 1, next_st)
+
+        dur = max(1, line_en - line_st)
+        leads_sorted = sorted(
+            c["leads"], key=lambda s: (s["st"], -(s["syl_en"] - s["st"]))
+        )
+        bgs_sorted = sorted(
+            c["bgs"], key=lambda s: (s["st"], -(s["syl_en"] - s["st"]))
+        )
+
+        if leads_sorted:
+            primary = leads_sorted[0]
+            secondary = [("lead", s) for s in leads_sorted[1:]]
+            secondary += [("bg", s) for s in bgs_sorted]
+            primary_bg = False
+        else:
+            primary = bgs_sorted[0]
+            secondary = [("bg", s) for s in bgs_sorted[1:]]
+            primary_bg = True
+
+        res = f"[{line_st},{dur}]"
+        res += _format_syls(
+            primary["syls"], line_st,
+            wrap_parens=primary_bg, max_end_ms=line_en, track=0,
+        )
+        for kind, s in sorted(secondary, key=lambda ks: (ks[1]["st"], 0 if ks[0] == "lead" else 1)):
+            part = _format_syls(
+                s["syls"], line_st,
+                wrap_parens=(kind == "bg"),
+                prefix=("• " if kind == "lead" else ""),
+                max_end_ms=line_en,
+                track=1,
+            )
+            if part:
+                res += " " + part
+
+        out.append((line_st, res))
+
+    if not out:
+        return None
+    return "\n".join(item[1] for item in out)
+
+
+# ==============================================================================
 # Provider 4
 # ==============================================================================
 def _normalize_p4(data):
@@ -687,78 +1005,33 @@ def _normalize_p4(data):
     content = data.get("Content", [])
     if not content:
         return None
-    out = []
 
-    def _format_syls(syls, st_ms, min_start_ms=0, wrap_parens=False):
-        if not syls:
-            return ""
-        res = ""
-        prev_st = min_start_ms
-        for idx, s in enumerate(syls):
-            w_st = max(prev_st, int(round(s.get("StartTime", 0) * 1000)))
-            w_en = max(w_st + 1, int(round(s.get("EndTime", 0) * 1000)))
-            w_dur = max(1, w_en - w_st)
-            w_off = max(0, w_st - st_ms)
-            prev_st = w_st
-            txt = s.get("Text", "")
-            if wrap_parens and idx == 0 and not txt.startswith("("):
-                txt = "(" + txt
-            is_part = s.get("IsPartOfWord", False)
-            if not is_part and not txt.endswith(" ") and idx + 1 < len(syls):
-                txt += " "
-            if wrap_parens and idx == len(syls) - 1 and not txt.endswith(")"):
-                txt = txt.rstrip() + ")"
-            res += f"<{w_off},{w_dur},0>{txt}"
-        return res
-
+    segments = []
     for line in content:
         lead = line.get("Lead")
+        if lead:
+            lead_syls = lead.get("Syllables", [])
+            if lead_syls:
+                segments.append({
+                    "st": int(round(lead.get("StartTime", 0) * 1000)),
+                    "en": int(round(lead.get("EndTime", 0) * 1000)),
+                    "syls": lead_syls,
+                    "is_bg": False,
+                })
         bgs = line.get("Background")
-        if not lead and not bgs:
-            continue
+        if isinstance(bgs, dict):
+            bgs = [bgs]
+        for bg in (bgs if isinstance(bgs, list) else []):
+            bg_syls = bg.get("Syllables", [])
+            if bg_syls:
+                segments.append({
+                    "st": int(round(bg.get("StartTime", 0) * 1000)),
+                    "en": int(round(bg.get("EndTime", 0) * 1000)),
+                    "syls": bg_syls,
+                    "is_bg": True,
+                })
 
-        if not lead:
-            for bg in (bgs if isinstance(bgs, list) else []):
-                bg_st_ms = int(round(bg.get("StartTime", 0) * 1000))
-                bg_en_ms = int(round(bg.get("EndTime", 0) * 1000))
-                bg_dur = max(0, bg_en_ms - bg_st_ms)
-                bg_syls = bg.get("Syllables", [])
-                if bg_syls:
-                    res = f"[{bg_st_ms},{bg_dur}]" + _format_syls(bg_syls, bg_st_ms, wrap_parens=True)
-                    out.append((bg_st_ms, res))
-            continue
-
-        lead_syls = lead.get("Syllables", [])
-        if not lead_syls:
-            continue
-
-        lead_st_ms = int(round(lead.get("StartTime", 0) * 1000))
-        lead_en_ms = int(round(lead.get("EndTime", 0) * 1000))
-        valid_bgs = [bg for bg in (bgs if isinstance(bgs, list) else []) if bg.get("Syllables")]
-
-        if not valid_bgs:
-            dur_ms = max(0, lead_en_ms - lead_st_ms)
-            res = f"[{lead_st_ms},{dur_ms}]" + _format_syls(lead_syls, lead_st_ms)
-            out.append((lead_st_ms, res))
-        else:
-            all_bg_en = max(int(round(bg.get("EndTime", 0) * 1000)) for bg in valid_bgs)
-            line_st_ms = lead_st_ms
-            line_en_ms = max(lead_en_ms, all_bg_en)
-            dur_ms = max(0, line_en_ms - line_st_ms)
-            line_res = f"[{line_st_ms},{dur_ms}]" + _format_syls(lead_syls, line_st_ms)
-
-            for bg in valid_bgs:
-                bg_syls = bg.get("Syllables", [])
-                if bg_syls:
-                    if not line_res.endswith(" "):
-                        line_res += " "
-                    line_res += _format_syls(bg_syls, line_st_ms, wrap_parens=True)
-            out.append((line_st_ms, line_res))
-
-    if not out:
-        return None
-    out.sort(key=lambda x: x[0])
-    return "\n".join(item[1] for item in out)
+    return _segments_to_lines(segments)
 
 def fetch_p4(title, artist="", target_duration=0, spotify_id="", **kwargs):
     sid = spotify_id
@@ -836,6 +1109,16 @@ def _parse_p5_time_ms(s):
     except ValueError:
         return 0
 
+def _is_bg_role(role):
+    r = (role or "").lower()
+    return ("bg" in r) or ("background" in r) or ("backing" in r) or ("harmony" in r)
+
+
+def _is_translation_role(role):
+    r = (role or "").lower()
+    return "translation" in r or "translit" in r
+
+
 def _normalize_p5(raw_ttml):
     if not raw_ttml:
         return None
@@ -844,90 +1127,87 @@ def _normalize_p5(raw_ttml):
         cleaned = re.sub(r'<\/?([a-zA-Z0-9_-]+):', lambda m: '<' if not m.group(0).startswith('</') else '</', cleaned)
         cleaned = re.sub(r'\s[a-zA-Z0-9_-]+:([a-zA-Z0-9_-]+)=', r' \1=', cleaned)
         root = ET.fromstring(cleaned)
-        out = []
-        for p in root.iter("p"):
+        segments = []
+        for p_idx, p in enumerate(root.iter("p")):
             b_str = p.attrib.get("begin")
             if not b_str:
                 continue
-            e_str = p.attrib.get("end")
+            p_role = p.attrib.get("role", "")
+            if _is_translation_role(p_role):
+                continue
             st_ms = _parse_p5_time_ms(b_str)
-            end_ms = _parse_p5_time_ms(e_str) if e_str else st_ms
-            dur_ms = max(0, end_ms - st_ms)
-            is_bg = "bg" in p.attrib.get("role", "").lower()
+            end_ms = _parse_p5_time_ms(p.attrib.get("end")) if p.attrib.get("end") else st_ms
+            p_bg = _is_bg_role(p_role)
 
-            spans = [
-                sp for sp in p.iter("span")
-                if len(list(sp)) == 0 and sp.attrib.get("begin") and "translation" not in sp.attrib.get("role", "").lower()
-            ]
-            if spans:
-                # If this is a background vocal and it overlaps with the previous line, merge into it
-                if is_bg and out:
-                    prev_st, prev_line = out[-1]
-                    m_prev = re.match(r"^\[(\d+),(\d+)\](.*)$", prev_line)
-                    if m_prev:
-                        p_st = int(m_prev.group(1))
-                        p_dur = int(m_prev.group(2))
-                        p_end = p_st + p_dur
-                        if st_ms < p_end + 400:
-                            new_end = max(p_end, end_ms)
-                            new_dur = new_end - p_st
-                            bg_part = ""
-                            for idx, sp in enumerate(spans):
-                                sp_st = _parse_p5_time_ms(sp.attrib.get("begin"))
-                                sp_en = _parse_p5_time_ms(sp.attrib.get("end")) if sp.attrib.get("end") else sp_st
-                                sp_dur = max(1, sp_en - sp_st)
-                                sp_off = max(0, sp_st - p_st)
-                                txt = (sp.text or "") + (sp.tail or "")
-                                if idx == 0 and not txt.startswith("("):
-                                    txt = "(" + txt
-                                if idx == len(spans) - 1 and not txt.endswith(")"):
-                                    txt = txt.rstrip() + ")"
-                                bg_part += f"<{sp_off},{sp_dur},0>{txt}"
-                            sep = " " if not m_prev.group(3).endswith(" ") else ""
-                            merged_line = f"[{p_st},{new_dur}]{m_prev.group(3)}{sep}{bg_part}"
-                            out[-1] = (p_st, merged_line)
-                            continue
+            lead_spans = []
+            bg_spans = []
+            for sp in p.iter("span"):
+                if len(list(sp)) > 0:
+                    continue
+                role = sp.attrib.get("role", "")
+                if _is_translation_role(role):
+                    continue
+                if not sp.attrib.get("begin"):
+                    continue
+                if p_bg or _is_bg_role(role):
+                    bg_spans.append(sp)
+                else:
+                    lead_spans.append(sp)
 
-                line_res = f"[{st_ms},{dur_ms}]"
-                for idx, sp in enumerate(spans):
+            def _span_syls(spans, fallback_end):
+                syls = []
+                for sp in spans:
                     sp_st = _parse_p5_time_ms(sp.attrib.get("begin"))
-                    sp_en = _parse_p5_time_ms(sp.attrib.get("end")) if sp.attrib.get("end") else sp_st
-                    sp_dur = max(1, sp_en - sp_st)
-                    sp_off = max(0, sp_st - st_ms)
-                    txt = (sp.text or "") + (sp.tail or "")
-                    if is_bg and idx == 0 and not txt.startswith("("):
-                        txt = "(" + txt
-                    if is_bg and idx == len(spans) - 1 and not txt.endswith(")"):
-                        txt = txt.rstrip() + ")"
-                    line_res += f"<{sp_off},{sp_dur},0>{txt}"
-                out.append((st_ms, line_res))
+                    sp_en = _parse_p5_time_ms(sp.attrib.get("end")) if sp.attrib.get("end") else fallback_end
+                    if sp_en <= sp_st:
+                        sp_en = sp_st + 1
+                    syls.append({
+                        "Text": (sp.text or "") + (sp.tail or ""),
+                        "StartTime": sp_st / 1000.0,
+                        "EndTime": sp_en / 1000.0,
+                        "IsPartOfWord": False,
+                    })
+                return syls
+
+            if lead_spans or bg_spans:
+                if lead_spans:
+                    segments.append({
+                        "st": st_ms,
+                        "en": max(end_ms, st_ms + 1),
+                        "syls": _span_syls(lead_spans, end_ms),
+                        "is_bg": False,
+                        # Vocals from one <p> form one line; the bg keeps its group
+                        # so attachment cannot move it to a neighbouring line.
+                        "grp": p_idx,
+                    })
+                if bg_spans:
+                    segments.append({
+                        "st": st_ms,
+                        "en": max(end_ms, st_ms + 1),
+                        "syls": _span_syls(bg_spans, end_ms),
+                        "is_bg": True,
+                        "grp": p_idx,
+                    })
             else:
                 txt = "".join(p.itertext()).strip()
                 if txt:
-                    if is_bg and out:
-                        prev_st, prev_line = out[-1]
-                        m_prev = re.match(r"^\[(\d+),(\d+)\](.*)$", prev_line)
-                        if m_prev:
-                            p_st = int(m_prev.group(1))
-                            p_dur = int(m_prev.group(2))
-                            p_end = p_st + p_dur
-                            if st_ms < p_end + 400:
-                                new_end = max(p_end, end_ms)
-                                new_dur = new_end - p_st
-                                bg_txt = f"({txt})" if not txt.startswith("(") else txt
-                                sep = " " if not m_prev.group(3).endswith(" ") else ""
-                                merged_line = f"[{p_st},{new_dur}]{m_prev.group(3)}{sep}{bg_txt}"
-                                out[-1] = (p_st, merged_line)
-                                continue
-                    if is_bg and not txt.startswith("("):
-                        txt = "(" + txt + ")"
-                    out.append((st_ms, f"[{st_ms},{dur_ms}]{txt}"))
-        if not out:
-            return None
-        out.sort(key=lambda x: x[0])
-        return "\n".join(item[1] for item in out)
+                    segments.append({
+                        "st": st_ms,
+                        "en": max(end_ms, st_ms + 1),
+                        "syls": [{
+                            "Text": txt,
+                            "StartTime": st_ms / 1000.0,
+                            "EndTime": max(end_ms, st_ms + 1) / 1000.0,
+                            "IsPartOfWord": False,
+                        }],
+                        "is_bg": p_bg,
+                        "grp": p_idx,
+                    })
+
+        return _segments_to_lines(segments)
     except Exception:
         return None
+
 
 _p5_lock = threading.Lock()
 _p5_cache = {}

@@ -38,6 +38,7 @@ TTL_RETRY_WORD = 48 * 3600   # retry word providers after 48 hours if only line-
 TTL_NONE = 90 * 60           # no lyrics found: re-query after 90 minutes
 CACHE_MAX_BYTES = 7 * 1024 * 1024            # 7 MiB hard limit
 CACHE_TARGET_BYTES = 6 * 1024 * 1024          # prune down to 6 MiB
+CACHE_VERSION = 2                             # bump when normalized output changes
 
 _LRC_HOST = sy._d("6c72636c69622e6e6574")
 # Client identification (decoded at runtime like the other endpoints)
@@ -94,7 +95,7 @@ def cache_load(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             entry = json.load(f)
-        return entry if isinstance(entry, dict) and entry.get("v") == 1 else None
+        return entry if isinstance(entry, dict) and entry.get("v") == CACHE_VERSION else None
     except Exception:
         return None
 
@@ -102,7 +103,7 @@ def cache_save(path, entry):
     try:
         d = os.path.dirname(path)
         os.makedirs(d, exist_ok=True)
-        entry["v"] = 1
+        entry["v"] = CACHE_VERSION
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(entry, f, ensure_ascii=False)
