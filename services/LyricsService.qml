@@ -117,12 +117,32 @@ Singleton {
     // How much of a gentle S-curve is blended over the whole word (0 = none, 1 = full smoothstep)
     readonly property real wordEaseMix: 0.3
 
-    function vocalEase(t, dur) {
+    function vocalEase(t, dur, chainedPrev, chainedNext) {
         if (t <= 0) return 0.0;
         if (t >= 1) return 1.0;
-        if (dur < 0.12) return t;
-        // Adaptive vocal easing: scales smoothly so held vocal notes get an organic S-curve swell
-        let mix = Math.min(0.60, 0.20 + 0.25 * Math.min(2.0, dur));
+        if (dur < 0.10) return t;
+
+        // Long held notes (sustained vowel) always get an organic musical S-curve swell
+        if (dur >= 0.75) {
+            let mix = Math.min(0.55, 0.25 + 0.20 * Math.min(2.0, dur));
+            return t + (t * t * (3.0 - 2.0 * t) - t) * mix;
+        }
+
+        // Chained syllables in a continuous singing phrase: preserve forward momentum
+        if (chainedPrev && chainedNext) {
+            return t;
+        } else if (!chainedPrev && chainedNext) {
+            // Phrase attack: start gently from silence, flow with momentum into next syllable
+            let mix = Math.min(0.35, 0.15 + 0.25 * dur);
+            return t + (t * t - t) * mix;
+        } else if (chainedPrev && !chainedNext) {
+            // Phrase release: enter with momentum, then gently settle into the pause
+            let mix = Math.min(0.35, 0.15 + 0.25 * dur);
+            return t + (t - t * t) * mix;
+        }
+
+        // Isolated word with pauses before and after: balanced gentle S-curve
+        let mix = Math.min(0.40, 0.15 + 0.25 * dur);
         return t + (t * t * (3.0 - 2.0 * t) - t) * mix;
     }
 
@@ -1415,7 +1435,7 @@ Singleton {
             for (let j = 0; j < n; j++) {
                 let indexFrac = (j + 1) / n;
                 let visualFrac = wordW > 0 ? Math.max(0.0, Math.min(1.0, (cx[j] - prevW) / wordW)) : indexFrac;
-                ct.push(0.4 * indexFrac + 0.6 * visualFrac);
+                ct.push(0.15 * indexFrac + 0.85 * visualFrac);
             }
 
             prefix += text;
@@ -1454,13 +1474,15 @@ Singleton {
 
         let dur = Math.max(0.001, w.end - w.start);
         let rawT = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
-        let e = root.vocalEase(rawT, dur);
+        let chainedPrev = i > 0 && (w.start - words[i - 1].end) <= 0.08;
+        let chainedNext = (i + 1 < words.length) && (words[i + 1].start - w.end) <= 0.08;
+        let e = root.vocalEase(rawT, dur, chainedPrev, chainedNext);
 
         let wordSpan = relEndX - relStartX;
         if (wordSpan <= 0) return Math.max(0.0, Math.min(1.0, relStartX / totalW));
 
         let smoothX = relStartX + e * wordSpan;
-        let smoothBlend = Math.min(1.0, Math.max(0.0, (dur - 0.20) / 0.60));
+        let smoothBlend = Math.min(1.0, Math.max(0.35, (dur - 0.15) / 0.50));
 
         let pixelX;
         if (smoothBlend >= 1.0 || !b.cx || b.cx.length <= 1) {
@@ -1473,9 +1495,11 @@ Singleton {
             let t0 = k === 0 ? 0 : ct[k - 1];
             let span = ct[k] - t0;
             let local = span > 0 ? (e - t0) / span : 1.0;
+            let sLocal = local * local * (3.0 - 2.0 * local);
+            let cLocal = 0.6 * local + 0.4 * sLocal;
             let x0 = Math.max(0, (k === 0 ? b.startX : cx[k - 1]) - baseStartX);
             let x1 = Math.max(x0, cx[k] - baseStartX);
-            let charX = x0 + local * (x1 - x0);
+            let charX = x0 + cLocal * (x1 - x0);
 
             pixelX = charX + smoothBlend * (smoothX - charX);
         }

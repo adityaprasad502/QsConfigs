@@ -283,6 +283,33 @@ Item {
                         width: Math.min(parent.implicitWidth - x,
                             Math.max(0, LyricsService.currentLeadWidth * LyricsService.currentLeadProgress))
                         clip: true
+                        layer.enabled: true
+                        layer.smooth: true
+                        layer.effect: OpacityMask {
+                            maskSource: Item {
+                                width: lyricClipOverlay.width
+                                height: lyricClipOverlay.height
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    anchors.right: leadFade.left
+                                    color: "#ffffff"
+                                }
+                                Rectangle {
+                                    id: leadFade
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    anchors.right: parent.right
+                                    width: Math.min(8, Math.min(parent.width, Math.max(0, (1.0 - LyricsService.currentLeadProgress) * 40)))
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.0; color: "#ffffff" }
+                                        GradientStop { position: 1.0; color: "#00ffffff" }
+                                    }
+                                }
+                            }
+                        }
 
                         StyledText {
                             anchors.top: parent.top
@@ -304,6 +331,33 @@ Item {
                         width: Math.min(parent.implicitWidth - x,
                             Math.max(0, LyricsService.currentBgWidth * LyricsService.currentBgProgress))
                         clip: true
+                        layer.enabled: true
+                        layer.smooth: true
+                        layer.effect: OpacityMask {
+                            maskSource: Item {
+                                width: lyricBgClipOverlay.width
+                                height: lyricBgClipOverlay.height
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    anchors.right: bgFade.left
+                                    color: "#ffffff"
+                                }
+                                Rectangle {
+                                    id: bgFade
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    anchors.right: parent.right
+                                    width: Math.min(8, Math.min(parent.width, Math.max(0, (1.0 - LyricsService.currentBgProgress) * 40)))
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.0; color: "#ffffff" }
+                                        GradientStop { position: 1.0; color: "#00ffffff" }
+                                    }
+                                }
+                            }
+                        }
 
                         StyledText {
                             anchors.top: parent.top
