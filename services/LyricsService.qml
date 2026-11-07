@@ -7,6 +7,9 @@ import Quickshell.Services.Mpris
 import qs
 import qs.modules.common
 import qs.modules.common.functions
+import "lyrics/lyrics_parser.js" as LyricsParser
+import "lyrics/vocal_sweep.js" as VocalSweep
+import "lyrics/lyrics_grouping.js" as LyricsGrouping
 
 /**
  * Lyrics service.
@@ -126,87 +129,15 @@ Singleton {
     readonly property real wordEaseMix: 0.3
 
     function vocalEase(t, dur, chainedPrev, chainedNext) {
-        if (t <= 0) return 0.0;
-        if (t >= 1) return 1.0;
-        if (dur < 0.10) return t;
-
-        // Long held notes (sustained vowel) always get an organic musical S-curve swell
-        if (dur >= 0.75) {
-            let mix = Math.min(0.55, 0.25 + 0.20 * Math.min(2.0, dur));
-            return t + (t * t * (3.0 - 2.0 * t) - t) * mix;
-        }
-
-        // Chained syllables in a continuous singing phrase: preserve forward momentum
-        if (chainedPrev && chainedNext) {
-            return t;
-        } else if (!chainedPrev && chainedNext) {
-            // Phrase attack: start gently from silence, flow with momentum into next syllable
-            let mix = Math.min(0.35, 0.15 + 0.25 * dur);
-            return t + (t * t - t) * mix;
-        } else if (chainedPrev && !chainedNext) {
-            // Phrase release: enter with momentum, then gently settle into the pause
-            let mix = Math.min(0.35, 0.15 + 0.25 * dur);
-            return t + (t - t * t) * mix;
-        }
-
-        // Isolated word with pauses before and after: balanced gentle S-curve
-        let mix = Math.min(0.40, 0.15 + 0.25 * dur);
-        return t + (t * t * (3.0 - 2.0 * t) - t) * mix;
-    }
-
-    function capitalizeFirstLetter(str) {
-        if (!str) return "";
-        return str.replace(/^([^\p{L}\p{N}]*)(\p{L})/u, function(_, leading, letter) {
-            return leading + letter.toUpperCase();
-        });
-    }
-
-    function normalizeCapsLine(str) {
-        if (!str) return "";
-        let s = str.toLowerCase();
-        s = s.replace(/^([^\p{L}\p{N}]*)(\p{L})/u, function(_, leading, letter) {
-            return leading + letter.toUpperCase();
-        });
-        s = s.replace(/([.!?]\s+)(\p{L})/gu, function(_, punct, letter) {
-            return punct + letter.toUpperCase();
-        });
-        s = s.replace(/\b(i)(['’](?:m|ve|ll|d))?\b/gu, function(_, _, suffix) {
-            return "I" + (suffix || "");
-        });
-        s = s.replace(/\b(ok|dj|tv|vip|sos|usa|uk)\b/gi, function(m) {
-            return m.toUpperCase();
-        });
-        return s;
+        return VocalSweep.vocalEase(t, dur, chainedPrev, chainedNext);
     }
 
     function escapeXml(s) {
-        if (!s) return "";
-        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return LyricsGrouping.escapeXml(s);
     }
 
     function formatLineRich(rawText, mainCol, bgCol) {
-        if (!rawText) return "";
-        let parts = rawText.split(/(\([^\)]*\))/g);
-        let res = "";
-        for (let i = 0; i < parts.length; i++) {
-            let part = parts[i];
-            if (!part) continue;
-            let esc = root.escapeXml(part);
-            if (part.startsWith("(") && part.endsWith(")")) {
-                res += `<font color="${bgCol || root.colBgLitHex}">${esc}</font>`;
-            } else if (esc.indexOf(" • ") !== -1) {
-                let chunks = esc.split(" • ");
-                for (let c = 0; c < chunks.length; c++) {
-                    if (c > 0) res += `<font color="${root.colBulletHex}"> • </font>`;
-                    if (chunks[c].length > 0) {
-                        res += `<font color="${mainCol || root.colLitHex}">${chunks[c]}</font>`;
-                    }
-                }
-            } else {
-                res += `<font color="${mainCol || root.colLitHex}">${esc}</font>`;
-            }
-        }
-        return res;
+        return LyricsGrouping.formatLineRich(rawText, mainCol, bgCol || root.colBgLitHex, root.colBulletHex);
     }
 
     // Precomputed track title + artist strings
@@ -223,75 +154,6 @@ Singleton {
         return (tName && tArtist)
             ? `<font color="${root.colActiveHex}">${tName}</font><font color="${root.colBulletHex}"> • </font><font color="${root.colActiveHex}">${tArtist}</font>`
             : `<font color="${root.colActiveHex}">${tName || tArtist}</font>`;
-    }
-
-    // ------------------------------------------------------------------------------------------
-    // Text helpers
-    // ------------------------------------------------------------------------------------------
-    readonly property string _cjk: "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af"
-    readonly property var _reCjkG: new RegExp("[" + _cjk + "]", "g")
-    readonly property string _alpha: "a-z0-9\\u00c0-\\u024f\\u1e00-\\u1eff\\u0370-\\u03ff\\u0400-\\u04ff\\u0590-\\u06ff\\u0900-\\u097f\\u0e00-\\u0e7f"
-    readonly property var _reLatinG: /[A-Za-z\u00c0-\u024f\u1e00-\u1eff]/g
-    readonly property var _reNormStrip: new RegExp("[^" + _alpha + _cjk + "]", "g")
-    readonly property var _reSymbolOnly: /^[\s.,\-_~*+=!?\u2026\u2014\u2013\u2022\u00b7\u266a\u266b\u266c\u3001\u3002\uff0c\uff01\uff1f\u300a\u300b()\[\]{}<>\/\\|:;'"`^#@&%$\u2605\u2606\u25cf\u25cb\u2500-\u257f]+$/
-    readonly property var _reBrackets: /\s*[\(（\[［【〖《〈「『\{][^\)）\]］】〗》〉」』\}]*[\)）\]］】〗》〉」』\}]/g
-    readonly property var _reInvisible: /[\ufeff\u200b-\u200d\u2060]/g
-
-    // Translation glued to a line: "English / 中文", "English (中文)", "中文 / English"
-    readonly property var _reTransSlashLatin: new RegExp("^(.*[A-Za-z0-9].*?)\\s*[\\/|\\uff5c]\\s*[" + _cjk + "][^A-Za-z]*$")
-    readonly property var _reTransParenLatin: new RegExp("^(.*[A-Za-z0-9].*?)\\s*[\\(\\uff08][^A-Za-z\\)\\uff09]*[" + _cjk + "][^A-Za-z\\)\\uff09]*[\\)\\uff09]\\s*$")
-    readonly property var _reTransSlashCjk: new RegExp("^(.*[" + _cjk + "].*?)\\s*[\\/|\\uff5c]\\s*[A-Za-z][^" + _cjk + "]*$")
-
-    // Credits / metadata. "Hard" patterns are unambiguous and removed anywhere in the song.
-    readonly property var _reHardEn: /^\s*(?:words?|lyrics?|lyricist|composers?|composed|composition|music|written|writers?|songwriters?|author|prod(?:uced|ucer|ucers|uction)|co-?producer|executive producer|vocals?(?: producer| arranger| arrangement| engineer)?|backing vocals?|background vocals?|arranged|arranger|arrangement|orchestra(?:ted|tion)?|conductor|mix(?:ed|ing|er)?|mix engineer|mastered|mastering|recorded|recording|engineer(?:ed)?|engineering|programm(?:ed|ing)|guitars?|bass|drums?|piano|keyboards?|strings|violin|cello|saxophone|trumpet|percussion|synth(?:esizer)?|publish(?:er|ing)|label|copyright|isrc|upc|op|sp|translat(?:or|ed|ion)|subtitles?|sync(?:ed)?|lrc|timeline|source|cover|original(?: (?:publisher|singer|artist|lyrics|title|composer))?|album|artist|singer|title|track|song|studio|credits?|presented|distribut(?:ion|ed)|licen[sc]ed|special thanks|thanks)(?:\s+by)?\s*[:：]/i
-    readonly property var _reHardBy: /^\s*(?:words?|lyrics?|music|written|composed?|produced?|arranged?|mix(?:ed)?|mastered|recorded|engineered|performed|sung|cover(?:ed)?|translated|edited|programmed|directed|presented|published|vocals?|guitars?|bass|drums?|keyboards?|piano|strings|original|sync(?:ed)?|lrc|subtitles?|timeline)(?:\s*(?:&|and|\+|\/)\s*(?:words?|lyrics?|music|composition|arranged))?\s+by\b/i
-    function _d(hex) {
-        let s = "";
-        for (let i = 0; i < hex.length; i += 2) {
-            s += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
-        }
-        return s;
-    }
-    readonly property var _reLegal: new RegExp("[©℗]|\\ball rights reserved\\b|\\bisrc\\b|^\\s*copyright\\b|https?:\\/\\/|\\bwww\\.|版权所有|未经(?:著作权人)?许可|享有本翻译作品|网易云音乐|酷狗音乐|QQ音乐|" + root._d("71716d757369637c6b75676f757c6e6574656173657c3136335c2e636f6d7c6c72636c6962"), "i")
-    readonly property var _reCjkStrong: /^\s*(?:作\s*[词詞曲]|[编編]\s*曲|词\s*曲|詞\s*曲|[监監]\s*[制製]|[制製]\s*作\s*人|母\s*[带帶]|混\s*音|[录錄]\s*音|原\s*唱|配\s*唱|[统統]\s*[筹籌]|企\s*[划劃]|版\s*[权權]|出\s*品|[发發]\s*行|音\s*乐\s*[总總]\s*[监監])/
-    readonly property var _reCjkColon: /^\s*(?:(?:作\s*[词詞曲]|[编編]\s*曲|词\s*曲|詞\s*曲|[监監]\s*[制製]|[制製]\s*作(?:人|助理|统筹)?|母\s*[带帶](?:工程?师|处理)?|混\s*音(?:工程?师|师|助理)?|[录錄]\s*音(?:工程?师|师|助理|室|棚)?|原\s*唱|配\s*唱|[统統]\s*[筹籌]|企\s*[划劃]|版\s*[权權]|出\s*品(?:人)?|[发發]\s*行(?:人)?|音\s*乐\s*[总總]\s*[监監]|音\s*频(?:工程?师|师|助理|制作)?|人\s*声(?:编辑|编写|录音)?|附加制作|弦\s*乐(?:编写|监制)?|[鼓键琴笛弦管铜木]\s*编[曲程]|弦乐|管乐|铜管|木管|打击乐|和声(?:编写)?|合音|文案|乐器|后期|策划|演奏|录制|原曲|翻译|译者|字幕|歌词|歌詞|演唱|歌手|歌名|曲名|[专專]\s*辑|(?:原声|木|电)?\s*吉他|(?:低音|电)?\s*贝[斯司]|(?:架子|低音)?\s*鼓|键盘|钢\s*琴|(?:[小中大小]|爱尔兰)?\s*提琴|(?:哈蒙德)?\s*(?:手|管|簧)?\s*风琴|(?:爱尔兰)?\s*(?:长|短|哨)?\s*笛|萨克斯|小号|圆号|长号|单簧管|双簧管|大管|古筝|琵琶|二胡|プロデュース|ミックス|マスタリング|レコーディング|ボーカル|コーラス|歌|작사|작곡|편곡|노래|프로듀서|믹싱|마스터링|녹음))\s*[:：]/
-    // Only trusted before the first sung line
-    readonly property var _reSoftEn: /^\s*(?:(?:executive |vocal |co-?)?producers?|composers?|lyricists?|arrangers?|songwriters?|publisher|written by)\b/i
-    readonly property var _reCjkSoft: /^\s*(?:演唱|歌手|歌名|曲名|[专專]\s*辑|和声|合音|吉他|贝斯|键盘|弦乐|乐器|后期|制作|策划|编写|歌词|文案)/
-    readonly property var _reMusicLabel: /^\s*[\[\(（【]?\s*(?:instrumental(?: track)?|interlude|intro|outro|solo|music|间奏|間奏|前奏|尾奏|纯音乐[^\n]{0,12}|此歌曲为没有填词的纯音乐[^\n]{0,12}|暂无歌词|no lyrics|lyrics not available)\s*[\]\)）】]?\s*[.。!！]*\s*$/i
-    readonly property var _reSectionLabel: /^\s*[\[\(（【]?\s*(?:verse|chorus|pre-?chorus|bridge|hook|refrain|break|drop|副歌|主歌|桥段|橋段)(?:\s*\d+)?\s*[\]\)）】]?\s*[:：]?\s*$/i
-
-    function _norm(s) {
-        return s ? String(s).toLowerCase().replace(root._reNormStrip, "") : "";
-    }
-
-    // Normalized forms of a name: raw, without bracketed notes, without CJK (translations)
-    function _normVariants(s) {
-        if (!s) return [];
-        let str = String(s);
-        let unbracketed = str.replace(root._reBrackets, "");
-        let noCjk = unbracketed.replace(root._reCjkG, "");
-        let cands = [root._norm(str), root._norm(unbracketed), root._norm(noCjk)];
-        let out = [];
-        for (let i = 0; i < cands.length; i++) {
-            if (cands[i] && out.indexOf(cands[i]) < 0) out.push(cands[i]);
-        }
-        return out;
-    }
-
-    function _countMatches(text, re) {
-        let m = text.match(re);
-        return m ? m.length : 0;
-    }
-
-    // "cjk" | "latin" | "mixed" | ""
-    function _scriptOf(s) {
-        if (!s) return "";
-        let c = root._countMatches(s, root._reCjkG);
-        let l = root._countMatches(s, root._reLatinG);
-        if (c > 0 && l === 0) return "cjk";
-        if (l > 0 && c === 0) return "latin";
-        return (c > 0 && l > 0) ? "mixed" : "";
     }
 
     // ------------------------------------------------------------------------------------------
@@ -485,618 +347,11 @@ Singleton {
         root._job = null;
     }
 
-    function unescapeHtml(s) {
-        if (!s) return "";
-        return String(s)
-            .replace(/&apos;/g, "'")
-            .replace(/&#39;/g, "'")
-            .replace(/&#x27;/g, "'")
-            .replace(/&quot;/g, '"')
-            .replace(/&#34;/g, '"')
-            .replace(/&nbsp;/g, " ")
-            .replace(/&lt;/g, "<")
-            .replace(/&gt;/g, ">")
-            .replace(/&amp;/g, "&");
-    }
-
-    function parseTimeHeader(h) {
-        if (!h) return 0;
-        if (h.includes(":")) {
-            let p = h.split(":");
-            if (p.length === 3) {
-                return (parseFloat(p[0]) || 0) * 3600.0 + (parseFloat(p[1]) || 0) * 60.0 + (parseFloat(p[2]) || 0);
-            }
-            return (parseFloat(p[0]) || 0) * 60.0 + (parseFloat(p[1]) || 0);
-        } else if (h.includes(",")) {
-            let p = h.split(",");
-            return (parseFloat(p[0]) || 0) / 1000.0;
-        }
-        let v = parseFloat(h) || 0;
-        return v > 1000 ? v / 1000.0 : v;
-    }
-
-    // ------------------------------------------------------------------------------------------
-    // Parsing: tokenize -> prune translations -> strip credits -> finalize timings
-    // ------------------------------------------------------------------------------------------
-
-    // Word timing from one line's content. Supports enhanced LRC <mm:ss.xx>/<off,dur[,x]>, word(start,dur)
-    // and (start,dur)word. Returns [] when the line carries no (valid) word timing.
-    function _parseWords(content, timeSec, offsetSec) {
-        let words = [];
-        let lt = content.indexOf("<");
-        if (lt >= 0 && content.indexOf(">", lt) > lt) {
-            let tagRegex = /<([^>]+)>([^<]*)/g;
-            let tm;
-            let tokens = [];
-            while ((tm = tagRegex.exec(content)) !== null) {
-                let tag = tm[1].trim();
-                if (!/^[\d:.,\s]+$/.test(tag)) continue; // "<3", "<i>" ... not a timing tag
-                tokens.push({ tag: tag, text: tm[2] });
-            }
-            if (tokens.length === 0) return words;
-
-            if (lt > 0 && content.substring(0, lt).length > 0) {
-                words.push({ text: content.substring(0, lt), start: timeSec, end: timeSec + 0.05, track: 0 });
-            }
-
-            for (let t = 0; t < tokens.length; t++) {
-                let tok = tokens[t];
-                let startSec = 0;
-                let endSec = 0;
-                let track = 0;
-
-                if (tok.tag.includes(":")) {
-                    let p = tok.tag.split(":");
-                    startSec = (parseFloat(p[0]) || 0) * 60.0 + (parseFloat(p[1]) || 0) - offsetSec;
-                } else if (tok.tag.includes(",")) {
-                    let p = tok.tag.split(",");
-                    startSec = timeSec + ((parseFloat(p[0]) || 0) / 1000.0);
-                    endSec = startSec + ((parseFloat(p[1]) || 0) / 1000.0);
-                    // Third field is the render track: 0 = foreground, 1 = background.
-                    // Older providers omit it, which means foreground.
-                    track = p.length >= 3 ? (parseInt(p[2], 10) || 0) : 0;
-                } else {
-                    let v = parseFloat(tok.tag) || 0;
-                    startSec = ((v > 1000) ? v / 1000.0 : v) - offsetSec;
-                }
-
-                if (endSec <= startSec && t + 1 < tokens.length) {
-                    let nextTag = tokens[t + 1].tag;
-                    if (nextTag.includes(":")) {
-                        let np = nextTag.split(":");
-                        endSec = (parseFloat(np[0]) || 0) * 60.0 + (parseFloat(np[1]) || 0) - offsetSec;
-                    } else if (nextTag.includes(",")) {
-                        endSec = timeSec + ((parseFloat(nextTag.split(",")[0]) || 0) / 1000.0);
-                    }
-                }
-
-                if (tok.text.length > 0) {
-                    words.push({ text: tok.text, start: Math.max(0, startSec), end: Math.max(0, endSec), track: track });
-                } else if (words.length > 0) {
-                    let lastW = words[words.length - 1];
-                    if (!lastW.end || lastW.end <= lastW.start) lastW.end = Math.max(0, startSec);
-                }
-            }
-        } else if (/\(\d+,\d+(?:,\d+)?\)/.test(content)) {
-            let parenParts = content.split(/\((\d+),(\d+)(?:,\d+)?\)/);
-            if (parenParts.length < 3) return words;
-            let isSuffix = (parenParts[0].trim().length > 0) && (parenParts[parenParts.length - 1].trim().length === 0);
-            if (isSuffix) {
-                // Format: word(start,dur)
-                let trailing = parenParts[parenParts.length - 1];
-                let num = Math.floor((parenParts.length - 1) / 3);
-                for (let idx = 0; idx < num; idx++) {
-                    let wText = parenParts[idx * 3];
-                    let off = parseFloat(parenParts[idx * 3 + 1]) || 0;
-                    let dur = parseFloat(parenParts[idx * 3 + 2]) || 0;
-                    if (idx === num - 1 && trailing) wText += trailing;
-                    let startSec = timeSec + (off / 1000.0);
-                    if (wText.length > 0) words.push({ text: wText, start: startSec, end: startSec + (dur / 1000.0), track: 0 });
-                }
-            } else {
-                // Format: (start,dur)word
-                if (parenParts[0].length > 0) {
-                    words.push({ text: parenParts[0], start: timeSec, end: timeSec + 0.05, track: 0 });
-                }
-                for (let idx = 1; idx < parenParts.length; idx += 3) {
-                    let off = parseFloat(parenParts[idx]) || 0;
-                    let dur = parseFloat(parenParts[idx + 1]) || 0;
-                    let wText = parenParts[idx + 2] || "";
-                    let startSec = timeSec + (off / 1000.0);
-                    if (wText.length > 0) words.push({ text: wText, start: startSec, end: startSec + (dur / 1000.0), track: 0 });
-                }
-            }
-        }
-        return words;
-    }
-
-    // Each render track is ordered independently: display order matches vocal order within
-    // a track. Merging tracks made background vocals wait for the foreground to finish, so
-    // track 0 (foreground) and track 1 (background) keep their own real timings here.
-    function _normalizeWordTimings(words, baseSec, limitSec) {
-        if (!words || words.length === 0) return;
-        let limit = Math.max(baseSec || 0, limitSec || 0);
-        let prevEnd = Math.max(0, baseSec || 0);
-        for (let i = 0; i < words.length; i++) {
-            let w = words[i];
-            let start = Math.max(0, w.start || 0);
-            let end = Math.max(0, w.end || 0);
-            if (end <= start) end = start + 0.05;
-
-            if (start < prevEnd) {
-                // Only shift words that would be skipped by a forward-only sweep.
-                if (end > prevEnd) {
-                    // The word is still sounding after the previous one: preserve the
-                    // remaining duration instead of compressing it.
-                    start = prevEnd;
-                    end = Math.min(end, limit);
-                    if (end <= start) end = Math.min(limit, start + 0.001);
-                } else {
-                    let start2 = Math.min(prevEnd, limit);
-                    let remainingWords = Math.max(1, words.length - i);
-                    let budget = Math.max(0, limit - start2);
-                    let slice = budget > 0
-                        ? Math.min(0.5, budget, Math.max(0.02, (budget / remainingWords) * 0.5))
-                        : 0.001;
-                    start = start2;
-                    end = start + Math.max(0.001, Math.min(Math.max(end - start, 0.001), slice));
-                }
-            }
-            w.start = start;
-            w.end = end;
-            prevEnd = Math.max(prevEnd, w.end);
-        }
-    }
-
-    // Raw text -> unsorted-safe entries { time, endTime, text, words, isWordSynced }
-    function _tokenize(synced, offsetSec) {
-        let entries = [];
-        let lines = synced.split("\n");
-        let headerRegex = /\[(\d+(?::\d+)+(?:\.\d+)?|\d+(?:,\d+)?)\]\s*/g;
-
-        for (let i = 0; i < lines.length; i++) {
-            let rawLine = lines[i].trim();
-            if (rawLine.length < 3 || rawLine.charCodeAt(0) !== 91 /* [ */) continue;
-
-            let headers = [];
-            let lastIdx = 0;
-            let match;
-            headerRegex.lastIndex = 0;
-            while ((match = headerRegex.exec(rawLine)) !== null && match.index === lastIdx) {
-                headers.push(match[1]);
-                lastIdx = headerRegex.lastIndex;
-            }
-            if (headers.length === 0) continue;
-
-            let content = rawLine.substring(lastIdx).replace(root._reInvisible, "");
-
-            for (let h = 0; h < headers.length; h++) {
-                let timeSec = Math.max(0, root.parseTimeHeader(headers[h]) - offsetSec);
-                let lineDuration = 0;
-                if (headers[h].includes(",")) {
-                    lineDuration = (parseFloat(headers[h].split(",")[1]) || 0) / 1000.0;
-                }
-
-                let words = root._parseWords(content, timeSec, offsetSec);
-                let isWordSynced = words.length > 0;
-
-                let headerEnd = lineDuration > 0 ? timeSec + lineDuration : 0;
-                let maxWordEnd = 0;
-                if (isWordSynced) {
-                    let track0 = [];
-                    let track1 = [];
-                    for (let w = 0; w < words.length; w++) {
-                        if ((words[w].track || 0) === 1) track1.push(words[w]);
-                        else track0.push(words[w]);
-                    }
-                    let limit = headerEnd;
-                    for (let w = 0; w < words.length; w++) {
-                        if ((words[w].end || 0) > limit) limit = words[w].end || 0;
-                    }
-                    root._normalizeWordTimings(track0, timeSec, limit);
-                    root._normalizeWordTimings(track1, timeSec, limit);
-                    maxWordEnd = 0;
-                    for (let w = 0; w < words.length; w++) {
-                        if (words[w].end > maxWordEnd) maxWordEnd = words[w].end;
-                    }
-                }
-
-                let cleanText = isWordSynced
-                    ? words.map(w => w.text).join("")
-                    : content.replace(/<[^>]+>/g, "").replace(/\(\d+,\d+(?:,\d+)?\)/g, "");
-                cleanText = cleanText.replace(/\s+/g, " ").trim();
-                if (cleanText.length === 0) {
-                    cleanText = "♪";
-                    isWordSynced = false;
-                }
-
-                let lineEnd = (isWordSynced && maxWordEnd > 0)
-                    ? Math.max(maxWordEnd, headerEnd)
-                    : headerEnd;
-
-                entries.push({
-                    time: timeSec,
-                    endTime: lineEnd,
-                    text: cleanText,
-                    isWordSynced: isWordSynced,
-                    words: isWordSynced ? words : null
-                });
-            }
-        }
-        return entries;
-    }
-
-    function _buildContext() {
+    function parseLyricsString(synced) {
         let title = StringUtils.cleanMusicTitle(root.currentTrackName) || root.currentTrackName || activePlayer?.trackTitle || "";
         let artist = root.currentArtistName || activePlayer?.trackArtist || "";
         let album = activePlayer?.trackAlbum || "";
-
-        let meta = {};
-        let any = false;
-        let add = function(s) {
-            let v = root._normVariants(s);
-            for (let i = 0; i < v.length; i++) { meta[v[i]] = true; any = true; }
-            return v;
-        };
-        let tv = add(title);
-        let av = add(artist);
-        add(album);
-        let artistParts = artist.split(/\s*(?:,|;|&|\/|、|\bfeat\.?|\bft\.?|\band\b)\s*/i);
-        for (let i = 0; i < artistParts.length; i++) add(artistParts[i]);
-        if (tv.length > 0 && av.length > 0) {
-            meta[tv[0] + av[0]] = true;
-            meta[av[0] + tv[0]] = true;
-        }
-
-        // Which script is the song itself in? (decides which side of a bilingual pair is the translation)
-        let titleScript = root._scriptOf(title);
-        let artistScript = root._scriptOf(artist);
-        let hint = "";
-        if ((titleScript === "cjk" || titleScript === "latin")
-                && (!artistScript || artistScript === "mixed" || artistScript === titleScript)) {
-            hint = titleScript;
-        }
-
-        return { meta: meta, hasMeta: any, hint: hint, stats: "", primary: "" };
-    }
-
-    // Splits time-adjacent lines into clusters and keeps only the song's own language where a
-    // cluster mixes CJK and Latin (bilingual LRC: original + translation sharing a timestamp).
-    function _pruneTranslations(entries, ctx) {
-        let n = entries.length;
-        for (let i = 0; i < n; i++) {
-            let e = entries[i];
-            if (e.text === "♪") { e._k = ""; continue; }
-            let c = root._countMatches(e.text, root._reCjkG);
-            let l = root._countMatches(e.text, root._reLatinG);
-            e._k = (c > 0 && c >= l) ? "c" : (l > 0 ? "l" : "");
-        }
-
-        let clusters = [];
-        let i = 0;
-        while (i < n) {
-            let j = i + 1;
-            while (j < n && entries[j].time - entries[i].time <= 0.3) j++;
-            clusters.push([i, j]);
-            i = j;
-        }
-
-        // Language of the lyric body (first sung, non-credit line of every cluster)
-        let c = 0, l = 0;
-        for (let k = 0; k < clusters.length; k++) {
-            for (let x = clusters[k][0]; x < clusters[k][1]; x++) {
-                let e = entries[x];
-                if (e._k === "" || root._isNoise(e, ctx)) continue;
-                if (e._k === "c") c++; else l++;
-                break;
-            }
-        }
-        ctx.stats = c > l ? "cjk" : "latin";
-        // The title's script wins for deciding which half of a bilingual pair is the translation
-        ctx.primary = ctx.hint || ctx.stats;
-        let keepKind = ctx.primary === "cjk" ? "c" : "l";
-
-        let out = [];
-        for (let k = 0; k < clusters.length; k++) {
-            let a = clusters[k][0], b = clusters[k][1];
-            if (b - a === 1) { out.push(entries[a]); continue; }
-
-            let hasC = false, hasL = false;
-            for (let x = a; x < b; x++) {
-                if (entries[x]._k === "c") hasC = true;
-                else if (entries[x]._k === "l") hasL = true;
-            }
-            let mixed = hasC && hasL;
-            let seen = {};
-            for (let x = a; x < b; x++) {
-                let e = entries[x];
-                if (mixed && e._k !== "" && e._k !== keepKind) continue;
-                let dupKey = e.text + "|" + Math.round(e.time * 100);
-                if (seen[dupKey]) continue;
-                seen[dupKey] = true;
-                out.push(e);
-            }
-        }
-        return out;
-    }
-
-    function _stripInlineTranslation(text, primary) {
-        let m = null;
-        if (primary === "latin") {
-            m = text.match(root._reTransSlashLatin) || text.match(root._reTransParenLatin);
-        } else if (primary === "cjk") {
-            m = text.match(root._reTransSlashCjk);
-        }
-        if (!m) return text;
-        let kept = m[1].trim();
-        return kept.length > 0 ? kept : text;
-    }
-
-    function _isHardCredit(t) {
-        return root._reHardEn.test(t) || root._reHardBy.test(t) || root._reCjkStrong.test(t)
-            || root._reCjkColon.test(t) || root._reLegal.test(t);
-    }
-
-    function _isPerformerTag(t, ctx) {
-        if (!ctx.hasMeta) return false;
-        let m = t.match(/^\s*[\[\(（【]?\s*([A-Za-z0-9\s._'\/&+-]+?)\s*[\]\)）】]?\s*[:：]\s*$/);
-        if (!m) return false;
-        let v = root._normVariants(m[1].trim());
-        for (let i = 0; i < v.length; i++) {
-            if (ctx.meta[v[i]]) return true;
-        }
-        let parts = m[1].trim().split(/\s*(?:,|;|&|\/|\+|、|\bfeat\.?|\bft\.?|\band\b)\s*/i);
-        if (parts.length > 1) {
-            let allMatch = true;
-            for (let p = 0; p < parts.length; p++) {
-                let pv = root._normVariants(parts[p]);
-                let ok = false;
-                for (let i = 0; i < pv.length; i++) {
-                    if (ctx.meta[pv[i]]) { ok = true; break; }
-                }
-                if (!ok) { allMatch = false; break; }
-            }
-            if (allMatch) return true;
-        }
-        return false;
-    }
-
-    // Credit-ish line that must not count as lyric content
-    function _isNoise(e, ctx) {
-        let t = e.text;
-        return root._isHardCredit(t) || root._reSoftEn.test(t) || root._reCjkSoft.test(t)
-            || (e.time < 15 && root._isMetaEcho(t, ctx))
-            || root._isPerformerTag(t, ctx);
-    }
-
-    // Title / artist / album echoes in the intro ("Song - Artist", "Artist (艾德·希兰)", ...)
-    function _isMetaEcho(t, ctx) {
-        if (!ctx.hasMeta) return false;
-        let whole = root._normVariants(t);
-        for (let i = 0; i < whole.length; i++) {
-            if (ctx.meta[whole[i]]) return true;
-        }
-        let parts = t.split(/\s+[-–—]\s+|\s*[\/|｜:：]\s*/);
-        if (parts.length >= 2) {
-            let allMatch = true;
-            for (let p = 0; p < parts.length; p++) {
-                let pv = root._normVariants(parts[p]);
-                let ok = false;
-                for (let i = 0; i < pv.length; i++) {
-                    if (ctx.meta[pv[i]]) { ok = true; break; }
-                }
-                if (!ok) allMatch = false;
-            }
-            if (allMatch) return true;
-
-            let dashParts = t.split(/\s+[-–—]\s+/);
-            if (dashParts.length === 2) {
-                let p0v = root._normVariants(dashParts[0]);
-                let p1v = root._normVariants(dashParts[1]);
-                let p0Match = p0v.some(function(v) { return !!ctx.meta[v]; });
-                let p1Match = p1v.some(function(v) { return !!ctx.meta[v]; });
-                if (p0Match || p1Match) {
-                    if (p0Match && p1Match) return true;
-                    if (ctx.primary === "latin" && (root._reCjkG.test(dashParts[0]) || root._reCjkG.test(dashParts[1]))) return true;
-                    if (root._reTransParenLatin.test(dashParts[0]) || root._reTransParenLatin.test(dashParts[1])) return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    function _stripCredits(entries, ctx) {
-        let freq = {};
-        for (let i = 0; i < entries.length; i++) {
-            let k = root._norm(entries[i].text);
-            freq[k] = (freq[k] || 0) + 1;
-        }
-
-        // First genuine Latin lyric: CJK-only lines before it are translated title/artist/credits.
-        // (If the song has no Latin lyric at all, CJK lines are the lyrics and are never touched.)
-        let firstLatinLyric = -1;
-        if (ctx.primary === "latin" && ctx.stats === "latin") {
-            for (let i = 0; i < entries.length; i++) {
-                let e = entries[i];
-                if (e._k === "l" && !root._isNoise(e, ctx)) { firstLatinLyric = i; break; }
-            }
-        }
-
-        let out = [];
-        let seenLyric = false;
-        let dropNext = false;
-
-        for (let i = 0; i < entries.length; i++) {
-            let e = entries[i];
-            let t = e.text;
-
-            if (t !== "♪") {
-                if (root._reMusicLabel.test(t) || root._reSymbolOnly.test(t)) {
-                    e.text = t = "♪";
-                    e.isWordSynced = false;
-                    e.words = null;
-                } else if (root._reSectionLabel.test(t) || root._isPerformerTag(t, ctx)) {
-                    continue;
-                } else if (root._isHardCredit(t)) {
-                    dropNext = !seenLyric && /[:：]\s*$/.test(t);
-                    continue;
-                } else if (!seenLyric) {
-                    if (dropNext && e.time < 25) { dropNext = false; continue; }
-                    if (root._reSoftEn.test(t) || root._reCjkSoft.test(t)) continue;
-                    if (e.time < 15 && freq[root._norm(t)] === 1 && root._isMetaEcho(t, ctx)) continue;
-                    if (i < firstLatinLyric && e.time < 25 && e._k === "c"
-                        && root._countMatches(t, root._reLatinG) === 0) continue;
-                    if (ctx.primary === "latin" && e.time < 15 && root._reCjkG.test(t) && root._isMetaEcho(t, ctx)) continue;
-                }
-                dropNext = false;
-            }
-
-            if (t === "♪") {
-                if (!seenLyric) continue; // no leading instrumental markers; the intro countdown covers it
-                if (out.length > 0 && out[out.length - 1].text === "♪") continue;
-            } else {
-                seenLyric = true;
-            }
-            out.push(e);
-        }
-
-        // Strip trailing credits, legal notices, and meta echoes from the outro
-        while (out.length > 0) {
-            let last = out[out.length - 1];
-            let lt = last.text;
-            if (lt === "♪") {
-                out.pop();
-                continue;
-            }
-            let isOutroCredit = root._isHardCredit(lt)
-                || root._reSoftEn.test(lt)
-                || root._reCjkSoft.test(lt)
-                || root._reLegal.test(lt)
-                || root._isMetaEcho(lt, ctx)
-                || (ctx.primary === "latin" && root._reCjkG.test(lt));
-            if (isOutroCredit) {
-                out.pop();
-            } else {
-                break;
-            }
-        }
-
-        return out;
-    }
-
-    function parseLyricsString(synced) {
-        if (!synced) return [];
-        if (synced.indexOf("&") >= 0) synced = root.unescapeHtml(synced);
-
-        let offsetSec = 0;
-        let offsetMatch = synced.match(/\[offset:\s*([+-]?\d+)\]/i);
-        if (offsetMatch) offsetSec = (parseFloat(offsetMatch[1]) || 0) / 1000.0;
-
-        let entries = root._tokenize(synced, offsetSec);
-        if (entries.length === 0) return [];
-        if (entries.length > 1) entries.sort((a, b) => a.time - b.time);
-
-        let ctx = root._buildContext();
-        entries = root._pruneTranslations(entries, ctx);
-        for (let i = 0; i < entries.length; i++) {
-            let e = entries[i];
-            if (e.text !== "♪") {
-                if (ctx.primary === "latin" && root._reCjkG.test(e.text)) {
-                    let cleaned = root._stripInlineTranslation(e.text, "latin");
-                    if (cleaned !== e.text) {
-                        e.text = cleaned;
-                        if (e.isWordSynced && e.words && e.words.length > 0) {
-                            while (e.words.length > 0 && root._reCjkG.test(e.words[e.words.length - 1].text)) {
-                                e.words.pop();
-                            }
-                            while (e.words.length > 0 && /[\s()（）]/.test(e.words[e.words.length - 1].text.trim())) {
-                                e.words.pop();
-                            }
-                        }
-                    }
-                } else if (!e.isWordSynced && ctx.primary === ctx.stats) {
-                    e.text = root._stripInlineTranslation(e.text, ctx.primary);
-                }
-            }
-        }
-        let parsed = root._stripCredits(entries, ctx);
-
-        // Drop leading and trailing blank text
-        while (parsed.length > 0 && (!parsed[0].text || parsed[0].text.trim() === "")) {
-            parsed.shift();
-        }
-        while (parsed.length > 0 && (!parsed[parsed.length - 1].text || parsed[parsed.length - 1].text.trim() === "")) {
-            parsed.pop();
-        }
-
-        let totalUpper = 0;
-        let totalLower = 0;
-        for (let i = 0; i < parsed.length; i++) {
-            let t = parsed[i].text;
-            if (t && t !== "♪") {
-                let u = t.match(/\p{Lu}/gu);
-                let l = t.match(/\p{Ll}/gu);
-                if (u) totalUpper += u.length;
-                if (l) totalLower += l.length;
-            }
-        }
-        let totalAlpha = totalUpper + totalLower;
-        let isSongAllWordCaps = (totalAlpha >= 30) && (totalUpper / totalAlpha >= 0.70);
-
-        for (let i = 0; i < parsed.length; i++) {
-            let p = parsed[i];
-            delete p._k;
-            if (p.text && p.text !== "♪") {
-                if (isSongAllWordCaps) {
-                    if (p.isWordSynced && p.words && p.words.length > 0) {
-                        let fullText = p.words.map(w => w.text).join("");
-                        let normFull = root.normalizeCapsLine(fullText);
-                        let offset = 0;
-                        for (let w = 0; w < p.words.length; w++) {
-                            let len = p.words[w].text.length;
-                            p.words[w].text = normFull.substring(offset, offset + len);
-                            offset += len;
-                        }
-                        p.text = normFull.replace(/\s+/g, " ").trim();
-                    } else {
-                        p.text = root.normalizeCapsLine(p.text);
-                    }
-                } else {
-                    p.text = root.capitalizeFirstLetter(p.text);
-                    if (p.isWordSynced && p.words && p.words.length > 0) {
-                        for (let w = 0; w < p.words.length; w++) {
-                            let orig = p.words[w].text;
-                            let cap = root.capitalizeFirstLetter(orig);
-                            if (cap !== orig) {
-                                p.words[w].text = cap;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            let nextT = (i + 1 < parsed.length) ? parsed[i + 1].time : (p.time + 4.5);
-            let rawGap = Math.max(0.1, nextT - p.time);
-
-            if (p.isWordSynced && p.words && p.words.length > 0) {
-                let lastW = p.words[p.words.length - 1];
-                if (!lastW.end || lastW.end <= lastW.start) {
-                    let wStart = lastW.start || p.time;
-                    let remainingGap = Math.max(0.2, nextT - wStart);
-                    lastW.end = Math.min(nextT, wStart + Math.min(remainingGap, 2.0));
-                }
-                if (!p.endTime || p.endTime <= p.time) {
-                    p.endTime = Math.min(nextT, Math.max(p.time + 0.1, lastW.end));
-                }
-            } else if (!p.endTime || p.endTime <= p.time) {
-                let dur = Math.min(rawGap, Math.max(2.5, Math.min(5.0, p.text.length * 0.28 + 1.2)));
-                p.endTime = p.time + dur;
-            }
-        }
-
-        // Only ♪ markers left (e.g. "pure music") means there is nothing to show
-        if (!parsed.some(function(p) { return p.text !== "♪"; })) return [];
-        return parsed;
+        return LyricsParser.parseLyricsString(synced, title, artist, album);
     }
 
     function precompileAndSetLyrics(parsed, hasWordSync) {
@@ -1312,149 +567,11 @@ Singleton {
     }
 
     function precompileLineMetrics(line) {
-        if (!line || line._rev === root._metricsRev) return;
-        line._rev = root._metricsRev;
-        line._wi = 0;
-        line._wiLead = 0;
-        line._wiBg = 0;
-        if (!line.words || line.words.length === 0) {
-            line._wordBounds = null;
-            line._leadIdx = [];
-            line._bgIdx = [];
-            line._trackData0 = null;
-            line._trackData1 = null;
-            line._totalWidth = root.measurePixelWidth(line.text);
-            return;
-        }
-        let joined = "";
-        for (let i = 0; i < line.words.length; i++) joined += line.words[i].text;
-        let w = root.measurePixelWidth(joined);
-        line._totalWidth = w > 0 ? w : root.measurePixelWidth(line.text);
-        root._computeBounds(line);
-
-        // Separate tracks by track id (0 = foreground, 1 = background)
-        let lead = [], bg = [];
-        for (let i = 0; i < line.words.length; i++) {
-            if ((line.words[i].track || 0) === 1) bg.push(i);
-            else lead.push(i);
-        }
-        line._leadIdx = lead;
-        line._bgIdx = bg;
-
-        // Repair squashed tail words or words whose durations were artificially squashed
-        // (e.g. background vocal clamped to next line boundary <= 25ms, or single tail word < 120ms).
-        for (let track = 0; track <= 1; track++) {
-            let idx = track === 1 ? bg : lead;
-            if (idx.length === 0) continue;
-            let tw = [];
-            for (let i = 0; i < idx.length; i++) tw.push(line.words[idx[i]]);
-
-            let hasSquashed = false;
-            if (tw.length === 1) {
-                let dur = tw[0].end - tw[0].start;
-                if (dur < 0.120) hasSquashed = true;
-            } else {
-                for (let i = 0; i < tw.length; i++) {
-                    let dur = tw[i].end - tw[i].start;
-                    if (dur <= 0.025 || (i > 0 && tw[i].start <= tw[i - 1].start)) {
-                        hasSquashed = true;
-                        break;
-                    }
-                }
-            }
-
-            if (hasSquashed) {
-                if (tw.length === 1) {
-                    tw[0].start = Math.max(line.time, tw[0].end - 0.200);
-                } else {
-                    let trackStart = tw[0].start;
-                    let trackEnd = tw[tw.length - 1].end;
-                    let totalSpan = Math.max(0.100, trackEnd - trackStart);
-                    let weights = [];
-                    let totalWeight = 0;
-                    for (let i = 0; i < tw.length; i++) {
-                        let wt = Math.max(1, (tw[i].text || "").trim().length);
-                        weights.push(wt);
-                        totalWeight += wt;
-                    }
-                    let cur = trackStart;
-                    for (let i = 0; i < tw.length; i++) {
-                        let wDur = (weights[i] / totalWeight) * totalSpan;
-                        tw[i].start = cur;
-                        tw[i].end = (i === tw.length - 1) ? trackEnd : cur + wDur;
-                        cur = tw[i].end;
-                    }
-                }
-            }
-        }
-        root._assignTrackRegions(line);
+        VocalSweep.precompileLineMetrics(line, root._metricsRev, root.measurePixelWidth);
     }
 
-    // Split a line's word bounds into its foreground (track 0) and background (track 1)
-    // regions. Precomputes track subset arrays and bounding geometry once per line.
-    function _assignTrackRegions(line) {
-        let words = line.words || [];
-        let bounds = line._wordBounds || [];
-        let lead = line._leadIdx || [];
-        let bg = line._bgIdx || [];
-
-        function _makeTrackData(idx) {
-            if (!idx || idx.length === 0) return null;
-            let tw = [];
-            let tb = [];
-            for (let i = 0; i < idx.length; i++) {
-                tw.push(words[idx[i]]);
-                tb.push(bounds[idx[i]]);
-            }
-            let sx = tb[0].startX;
-            let ex = tb[tb.length - 1].endX;
-            return {
-                words: tw,
-                bounds: tb,
-                startX: sx,
-                endX: ex,
-                width: Math.max(0.0, ex - sx)
-            };
-        }
-        line._trackData0 = _makeTrackData(lead);
-        line._trackData1 = _makeTrackData(bg);
-    }
-
-    // Per word: pixel position after each character (cx) and balanced character duration shares (ct).
-    // Balances glyph count with visual width proportion so narrow characters do not crawl
-    // and wide characters do not sprint.
     function _computeBounds(line) {
-        let bounds = [];
-        let prefix = "";
-        let prevW = 0;
-        let words = line.words || [];
-        for (let i = 0; i < words.length; i++) {
-            let text = words[i].text;
-            let chars = Array.from(text);
-            let n = chars.length;
-            let cx = [];
-            let ct = [];
-            let acc = "";
-            for (let j = 0; j < n; j++) {
-                acc += chars[j];
-                cx.push(j === n - 1 ? root.measurePixelWidth(prefix + text) : root.measurePixelWidth(prefix + acc));
-            }
-            let endX = n > 0 ? cx[n - 1] : prevW;
-            let wordW = endX - prevW;
-
-            // Balance character timing between glyph index and visual width proportion
-            for (let j = 0; j < n; j++) {
-                let indexFrac = (j + 1) / n;
-                let visualFrac = wordW > 0 ? Math.max(0.0, Math.min(1.0, (cx[j] - prevW) / wordW)) : indexFrac;
-                ct.push(0.15 * indexFrac + 0.85 * visualFrac);
-            }
-
-            prefix += text;
-            bounds.push({ startX: prevW, endX: endX, cx: cx, ct: ct });
-            prevW = endX;
-        }
-        line._wordBounds = bounds;
-        return bounds;
+        return VocalSweep.computeBounds(line, root.measurePixelWidth);
     }
 
     function recompileAllMetrics() {
@@ -1467,199 +584,34 @@ Singleton {
     }
 
     function _sweepWordSubset(words, bounds, totalW, baseStartX, currentSec, lineRefKey, line) {
-        if (!words || words.length === 0 || totalW <= 0) return 1.0;
-        if (currentSec <= words[0].start) return 0.0;
-        if (currentSec >= words[words.length - 1].end) return 1.0;
-
-        let i = line[lineRefKey] || 0;
-        if (i >= words.length || currentSec < words[i].start) i = 0;
-        while (i < words.length && currentSec >= words[i].end) i++;
-        line[lineRefKey] = i;
-        if (i >= words.length) return 1.0;
-
-        let w = words[i];
-        let b = bounds[i];
-        let relStartX = Math.max(0, b.startX - baseStartX);
-        let relEndX = Math.max(relStartX, b.endX - baseStartX);
-        if (currentSec <= w.start) return Math.max(0.0, Math.min(1.0, relStartX / totalW));
-
-        let dur = Math.max(0.001, w.end - w.start);
-        let rawT = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
-        let chainedPrev = i > 0 && (w.start - words[i - 1].end) <= 0.08;
-        let chainedNext = (i + 1 < words.length) && (words[i + 1].start - w.end) <= 0.08;
-        let e = root.vocalEase(rawT, dur, chainedPrev, chainedNext);
-
-        let wordSpan = relEndX - relStartX;
-        if (wordSpan <= 0) return Math.max(0.0, Math.min(1.0, relStartX / totalW));
-
-        let smoothX = relStartX + e * wordSpan;
-        let smoothBlend = Math.min(1.0, Math.max(0.35, (dur - 0.15) / 0.50));
-
-        let pixelX;
-        if (smoothBlend >= 1.0 || !b.cx || b.cx.length <= 1) {
-            pixelX = smoothX;
-        } else {
-            let ct = b.ct;
-            let cx = b.cx;
-            let k = 0;
-            while (k < ct.length - 1 && e >= ct[k]) k++;
-            let t0 = k === 0 ? 0 : ct[k - 1];
-            let span = ct[k] - t0;
-            let local = span > 0 ? (e - t0) / span : 1.0;
-            let sLocal = local * local * (3.0 - 2.0 * local);
-            let cLocal = 0.6 * local + 0.4 * sLocal;
-            let x0 = Math.max(0, (k === 0 ? b.startX : cx[k - 1]) - baseStartX);
-            let x1 = Math.max(x0, cx[k] - baseStartX);
-            let charX = x0 + cLocal * (x1 - x0);
-
-            pixelX = charX + smoothBlend * (smoothX - charX);
-        }
-
-        return Math.max(0.0, Math.min(1.0, pixelX / totalW));
+        return VocalSweep.sweepWordSubset(words, bounds, totalW, baseStartX, currentSec, lineRefKey, line);
     }
 
     function getLineSweepFraction(line, currentSec) {
-        if (!line) return 0.0;
-        let totalW = line._totalWidth || 0;
-        if (totalW <= 0) return 0.0;
-        let words = line.words;
-        if (!words || words.length === 0) return 1.0;
-        let bounds = line._wordBounds || root._computeBounds(line);
-        return root._sweepWordSubset(words, bounds, totalW, 0, currentSec, "_wi", line);
+        return VocalSweep.getLineSweepFraction(line, currentSec, root.measurePixelWidth);
     }
 
-    // Word subset + bounds for one render track, in the line's own pixel coordinates.
     function _lineTrackData(line, track) {
-        if (!line) return null;
-        return track === 1 ? (line._trackData1 || null) : (line._trackData0 || null);
+        return VocalSweep.lineTrackData(line, track);
     }
 
-    // Progress within one track's region (0 = untouched, 1 = fully swept).
     function getLineTrackProgress(line, track, currentSec) {
-        let d = root._lineTrackData(line, track);
-        if (!d) return 0.0;
-        if (d.width <= 0) return 1.0;
-        let key = track === 1 ? "_wiBg" : "_wiLead";
-        return root._sweepWordSubset(d.words, d.bounds, d.width, d.startX, currentSec, key, line);
+        return VocalSweep.getLineTrackProgress(line, track, currentSec, root.measurePixelWidth);
     }
 
-    // Absolute x of a line inside its (possibly multi-line) display group.
     function getGroupLineStartX(g, lineIdx, lines) {
-        if (!g) return 0.0;
-        if (lineIdx < g.startIdx || lineIdx > g.endIdx) return 0.0;
-        let b = root._getGroupBounds(g, lines);
-        if (!b || b.length <= 0) return 0.0;
-        let off = lineIdx - g.startIdx;
-        if (off < 0 || off >= b.length) return 0.0;
-        return b[off].startX || 0.0;
+        return VocalSweep.getGroupLineStartX(g, lineIdx, lines, root._getGroupBounds);
     }
 
     function calculateGroupSweep(currGroup, currIdx, currentSec) {
-        let lines = root.lyricLines;
-        if (!currGroup || !lines || lines.length === 0) return 0.0;
-
-        if (currGroup.startIdx === currGroup.endIdx) {
-            let lObj = lines[currGroup.startIdx];
-            if (!lObj || !lObj.isWordSynced) return 1.0;
-            return root.getLineSweepFraction(lObj, currentSec);
-        }
-
-        let bulletW = root.bulletPixelWidth > 0 ? root.bulletPixelWidth : root.measurePixelWidth(" • ");
-        let totalGroupW = 0;
-        let sweptPixels = 0;
-
-        for (let m = currGroup.startIdx; m <= currGroup.endIdx; m++) {
-            let lObj = lines[m];
-            let lineW = lObj._totalWidth || 0;
-
-            if (m > currGroup.startIdx) {
-                totalGroupW += bulletW;
-                if (m <= currIdx) {
-                    sweptPixels += bulletW;
-                }
-            }
-
-            totalGroupW += lineW;
-
-            if (m < currIdx) {
-                sweptPixels += lineW;
-            } else if (m === currIdx) {
-                if (lObj.isWordSynced) {
-                    sweptPixels += root.getLineSweepFraction(lObj, currentSec) * lineW;
-                } else {
-                    sweptPixels += lineW;
-                }
-            }
-        }
-
-        if (totalGroupW <= 0) return 0.0;
-        return Math.max(0.0, Math.min(1.0, sweptPixels / totalGroupW));
+        return VocalSweep.calculateGroupSweep(currGroup, currIdx, currentSec, root.lyricLines, root.bulletPixelWidth, root.measurePixelWidth);
     }
 
     function _getGroupBounds(g, lines) {
-        if (!g) return null;
-        if (g._bounds && g._rev === root._metricsRev) return g._bounds;
-
-        let count = g.endIdx - g.startIdx + 1;
-        if (count <= 1) {
-            g._rev = root._metricsRev;
-            g._bounds = [{
-                startFrac: 0.0,
-                endFrac: 1.0,
-                startX: 0,
-                endX: lines[g.startIdx]?._totalWidth || 0
-            }];
-            g._totalWidth = lines[g.startIdx]?._totalWidth || 0;
-            return g._bounds;
-        }
-
-        let bulletSep = `<font color="${root.colBulletHex}"> • </font>`;
-        let parts = [];
-        for (let m = g.startIdx; m <= g.endIdx; m++) {
-            parts.push(root.formatLineRich(lines[m].text, root.colLitHex, root.colBgLitHex));
-        }
-
-        styledMetrics.text = parts.join(bulletSep);
-        let totalW = styledMetrics.implicitWidth;
-        if (totalW <= 0) {
-            g._rev = root._metricsRev;
-            g._bounds = null;
-            return null;
-        }
-
-        let prefix = "";
-        let bounds = [];
-        for (let i = 0; i < count; i++) {
-            let startX = 0;
-            if (i > 0) {
-                styledMetrics.text = prefix + bulletSep;
-                startX = styledMetrics.implicitWidth;
-                prefix = prefix + bulletSep + parts[i];
-            } else {
-                prefix = parts[0];
-                startX = 0;
-            }
-            styledMetrics.text = prefix;
-            let endX = styledMetrics.implicitWidth;
-
-            // Generous padding into bullet separator whitespace to guarantee zero clipping of edge glyphs
-            let clipStart = (i === 0) ? 0.0 : Math.max(0.0, startX - 2.5);
-            let clipEnd = (i === count - 1) ? totalW : Math.min(totalW, endX + 2.0);
-
-            bounds.push({
-                startX: startX,
-                endX: endX,
-                clipStart: clipStart,
-                clipEnd: clipEnd,
-                startFrac: Math.max(0.0, Math.min(1.0, clipStart / totalW)),
-                endFrac: Math.max(0.0, Math.min(1.0, clipEnd / totalW))
-            });
-        }
-
-        g._rev = root._metricsRev;
-        g._bounds = bounds;
-        g._totalWidth = totalW;
-        return bounds;
+        return LyricsGrouping.computeGroupBounds(
+            g, lines, root._metricsRev, root.colBulletHex,
+            root.colLitHex, root.colBgLitHex, styledMetrics, root.formatLineRich
+        );
     }
 
     function buildGroupIndex() {
@@ -1668,93 +620,10 @@ Singleton {
             root.lyricGroupIndex = [];
             return;
         }
-
         let bulletW = root.bulletPixelWidth > 0 ? root.bulletPixelWidth : root.measurePixelWidth(" • ");
         root.bulletPixelWidth = bulletW;
-
-        for (let l = 0; l < lines.length; l++) {
-            root.precompileLineMetrics(lines[l]);
-        }
-
         let maxAllowedPx = Math.max(160, (GlobalStates?.topBarMediaWidth ?? 440) - 135);
-
-        function isLineRepeat(k) {
-            if (k < 0 || k >= lines.length) return false;
-            let txt = lines[k].text;
-            if (txt === "♪") return false;
-            return (k > 0 && lines[k - 1].text === txt) || (k + 1 < lines.length && lines[k + 1].text === txt);
-        }
-
-        let index = [];
-        let i = 0;
-        while (i < lines.length) {
-            let start = i;
-            let currentLine = lines[i];
-            let groupText = currentLine.text;
-            let currentGroupWidth = currentLine._totalWidth || 0;
-            let j = i + 1;
-
-            // Never group instrumental markers or repeat sequences
-            let isRepeat = isLineRepeat(i);
-            let isInstrumental = groupText === "♪";
-            let isAlreadyLong = currentGroupWidth > maxAllowedPx * 0.62;
-
-            if (!isInstrumental && !isRepeat && !isAlreadyLong) {
-                while (j < lines.length) {
-                    let nextLine = lines[j];
-                    let nextText = nextLine.text;
-
-                    // Stop if next item is an instrumental pause or repeat sequence
-                    if (nextText === "♪" || isLineRepeat(j)) break;
-
-                    let prevLine = lines[j - 1];
-                    let prevEnd = prevLine.endTime || (prevLine.time + 3.0);
-                    let silenceGap = nextLine.time - prevEnd;
-
-                    let lineStartInterval = nextLine.time - prevLine.time;
-                    let totalSpan = nextLine.time - lines[start].time;
-                    if (silenceGap > 1.6 || lineStartInterval > 5.0 || totalSpan > 9.5) break;
-
-                    let prevTrimmed = prevLine.text.trim();
-                    let hasTerminalPunctuation = /[.?!:]$/.test(prevTrimmed) && !/\.\.\.$/.test(prevTrimmed);
-                    let bothBrief = (prevTrimmed.length <= 16) && (nextText.trim().length <= 16);
-                    if (hasTerminalPunctuation && !bothBrief) break;
-
-                    // Triplet restraint
-                    let currentCount = (j - start) + 1;
-                    if (currentCount > 3) break;
-                    if (currentCount === 3) {
-                        let line1Short = lines[start].text.length <= 18;
-                        let line2Short = lines[start + 1].text.length <= 18;
-                        let line3Short = nextText.length <= 18;
-                        if (!line1Short || !line2Short || !line3Short) break;
-                    }
-
-                    // Countdown timer reserve
-                    let nextAfter = (j + 1 < lines.length) ? lines[j + 1] : null;
-                    let nextAfterGap = nextAfter ? (nextAfter.time - (nextLine.endTime || nextLine.time + 3.0)) : 999;
-                    let hasTimer = (nextAfterGap > 4.5) || (nextAfter && nextAfter.text === "♪");
-                    let reserve = hasTimer ? 65 : 20;
-
-                    // Pixel width check using precompiled line lengths
-                    let candidateWidth = currentGroupWidth + bulletW + (nextLine._totalWidth || 0);
-                    let maxTargetWidth = (currentCount === 3) ? (maxAllowedPx * 0.85) : maxAllowedPx;
-                    if (candidateWidth > maxTargetWidth - reserve) break;
-
-                    // Merge line into multiline group
-                    groupText = groupText + " • " + nextText;
-                    currentGroupWidth = candidateWidth;
-                    j++;
-                }
-            }
-
-            let group = { startIdx: start, endIdx: j - 1, text: groupText, nextStartIdx: j };
-            for (let k = start; k < j; k++) {
-                index.push(group);
-            }
-            i = j;
-        }
-        root.lyricGroupIndex = index;
+        root.lyricGroupIndex = LyricsGrouping.buildGroupIndex(lines, bulletW, maxAllowedPx, root.precompileLineMetrics);
         root._mMode = -1;
     }
 
@@ -1797,22 +666,7 @@ Singleton {
 
     // Last line whose time <= pos (or -1 before the first line's lead-in). O(1) for normal playback.
     function _findLineIdx(lines, pos) {
-        let n = lines.length;
-        if (pos < Math.max(0, lines[0].time - root.firstLineLead)) return -1;
-
-        let i = root._rawIdx;
-        if (i >= 0 && i < n && lines[i].time <= pos) {
-            if (i + 1 >= n || lines[i + 1].time > pos) return i;
-            if (i + 2 >= n || lines[i + 2].time > pos) return i + 1;
-        }
-
-        let lo = 0, hi = n - 1;
-        while (lo < hi) {
-            let mid = (lo + hi + 1) >> 1;
-            if (lines[mid].time <= pos) lo = mid;
-            else hi = mid - 1;
-        }
-        return lo;
+        return LyricsGrouping.findLineIdx(lines, pos, root.firstLineLead, root._rawIdx);
     }
 
     function _tagged(tag) {
@@ -1826,10 +680,7 @@ Singleton {
     }
 
     function _lastRealLine(lines, fromIdx) {
-        for (let p = fromIdx; p >= 0; p--) {
-            if (lines[p].text !== "♪") return p;
-        }
-        return -1;
+        return LyricsGrouping.lastRealLine(lines, fromIdx);
     }
 
     // Builds all text-ish state for the given display state. Only called when that state changes.
@@ -1876,205 +727,48 @@ Singleton {
                 lineDur = Math.max(1.0, endSec - startSec);
             }
 
-            // Generalized repeat detection for any unit (single line, pair A•B, triplet A•B•C, etc.)
-            let identicalCount = 1;
-            let repeatSeriesStart = g.startIdx;
-            if (g.text && g.text !== "♪") {
-                // Forward scan across consecutive groups (with max 6.0s natural musical gap)
-                let nextIdx = g.nextStartIdx;
-                let prevEnd = lines[g.endIdx].endTime || (lines[g.endIdx].time + 3.0);
-                while (nextIdx < lines.length) {
-                    let nextGroup = groups[nextIdx];
-                    if (!nextGroup || nextGroup.text !== g.text) break;
-                    let nextStart = lines[nextGroup.startIdx].time;
-                    let silenceGap = nextStart - prevEnd;
-                    if (silenceGap > 6.0) break; // Exclude long interludes / separate song sections
-                    identicalCount++;
-                    prevEnd = lines[nextGroup.endIdx].endTime || (lines[nextGroup.endIdx].time + 3.0);
-                    nextIdx = nextGroup.nextStartIdx;
-                }
-                // Backward scan across consecutive groups
-                let prevIdx = g.startIdx - 1;
-                let currStart = lines[g.startIdx].time;
-                while (prevIdx >= 0) {
-                    let prevGroup = groups[prevIdx];
-                    if (!prevGroup || prevGroup.text !== g.text) break;
-                    let pEnd = lines[prevGroup.endIdx].endTime || (lines[prevGroup.endIdx].time + 3.0);
-                    let silenceGap = currStart - pEnd;
-                    if (silenceGap > 6.0) break;
-                    repeatSeriesStart = prevGroup.startIdx;
-                    currStart = lines[prevGroup.startIdx].time;
-                    prevIdx = prevGroup.startIdx - 1;
-                }
-            }
-
-            let hasRepeatSeries = identicalCount > 1 || (g.startIdx > 0 && groups[g.startIdx - 1].text === g.text);
-            groupKey = hasRepeatSeries ? repeatSeriesStart : g.startIdx;
-
-            let isLastOfSeries = identicalCount === 1
-                && g.startIdx > 0
-                && groups[g.startIdx - 1].text === g.text;
-            let repeatSuffix = (identicalCount > 1 || isLastOfSeries) ? ` (x${identicalCount})` : "";
+            let rep = LyricsGrouping.getRepeatInfo(groups, lines, g);
+            groupKey = rep.groupKey;
+            let repeatSuffix = rep.repeatSuffix;
             let baseText = g.text + repeatSuffix;
 
-            let waitingHex = isSingle ? root.colWaitingSingleHex : root.colWaitingGroupHex;
-            let bulletSep = `<font color="${root.colBulletHex}"> • </font>`;
-            let totalLyricW = 0;
-            let fullGroupW = 0;
-
-            if (!isSingle) {
-                let partsDim = [], partsLit = [], partsRich = [];
-                for (let m = g.startIdx; m <= g.endIdx; m++) {
-                    let lObj = lines[m];
-                    if (mode === root.mSing) {
-                        let dimPart = root.formatLineRich(lObj.text, root.colUpcomingHex, root.colBgUpcomingHex);
-                        partsDim.push(dimPart);
-                        partsLit.push(root.formatLineRich(lObj.text, root.colLitHex, root.colBgLitHex));
-                        partsRich.push(m < currIdx
-                            ? root.formatLineRich(lObj.text, root.colPastHex, root.colBgPastHex)
-                            : dimPart);
-                    }
-                }
-                let groupBounds = root._getGroupBounds(g, lines);
-                totalLyricW = g._totalWidth || 0;
-                fullGroupW = totalLyricW;
-                if (mode === root.mSing) {
-                    dim = partsDim.join(bulletSep);
-                    lit = partsLit.join(bulletSep);
-                    rich = partsRich.join(bulletSep);
-                    if (repeatSuffix.length > 0) {
-                        // Repeat indicators are UI metadata, not sung lyrics — keep out of the lit overlay
-                        let suffixRich = ` <font color="${timerCol}">${repeatSuffix}</font>`;
-                        dim += suffixRich;
-                        rich += suffixRich;
-                        styledMetrics.text = rich;
-                        if (styledMetrics.implicitWidth > 0) {
-                            fullGroupW = styledMetrics.implicitWidth;
-                        } else {
-                            fullGroupW = totalLyricW + root.getRepeatSuffixWidth(repeatSuffix);
-                        }
-                    }
-                    line = baseText;
-                }
-                if (groupBounds && currIdx >= g.startIdx && currIdx <= g.endIdx && started) {
-                    let b = groupBounds[currIdx - g.startIdx];
-                    if (fullGroupW > 0) {
-                        startFrac = Math.max(0.0, Math.min(1.0, b.clipStart / fullGroupW));
-                        endFrac = Math.max(0.0, Math.min(1.0, b.clipEnd / fullGroupW));
-                    } else {
-                        startFrac = b.startFrac;
-                        endFrac = b.endFrac;
-                    }
+            if (mode === root.mSing) {
+                let colors = {
+                    timer: root.colTimerHex,
+                    bullet: root.colBulletHex,
+                    upcoming: root.colUpcomingHex,
+                    bgUpcoming: root.colBgUpcomingHex,
+                    lit: root.colLitHex,
+                    bgLit: root.colBgLitHex,
+                    past: root.colPastHex,
+                    bgPast: root.colBgPastHex
+                };
+                let s = LyricsGrouping.buildSingDisplay(
+                    g, currIdx, lines, colors, repeatSuffix,
+                    styledMetrics, root._getGroupBounds, started, root.getRepeatSuffixWidth
+                );
+                line = s.line;
+                dim = s.dim;
+                lit = s.lit;
+                rich = s.rich;
+                startFrac = s.startFrac;
+                endFrac = s.endFrac;
+                if (root.hasWordSync && repeatSuffix.length > 0 && s.totalLyricW > 0) {
+                    progScale = s.fullGroupW > 0 ? (s.totalLyricW / s.fullGroupW) : 1.0;
                 }
             } else {
-                totalLyricW = lines[g.startIdx]._totalWidth || 0;
-                fullGroupW = totalLyricW;
-                if (mode === root.mSing) {
-                    dim = root.formatLineRich(g.text, root.colUpcomingHex, root.colBgUpcomingHex);
-                    lit = root.formatLineRich(g.text, root.colLitHex, root.colBgLitHex);
-                    rich = lit;
-                    if (repeatSuffix.length > 0) {
-                        // Repeat indicators are UI metadata, not sung lyrics — keep out of the lit overlay
-                        let suffixRich = ` <font color="${timerCol}">${repeatSuffix}</font>`;
-                        dim += suffixRich;
-                        rich += suffixRich;
-                        fullGroupW = totalLyricW + root.getRepeatSuffixWidth(repeatSuffix);
-                    }
-                    line = baseText;
-                }
-            }
-
-            if (mode === root.mSing && root.hasWordSync && repeatSuffix.length > 0 && totalLyricW > 0) {
-                progScale = fullGroupW > 0 ? (totalLyricW / fullGroupW) : 1.0;
-            }
-
-            switch (mode) {
-            case root.mMark: {
-                if (remaining > 0) lineDur = remaining;
-                // Walk back past all consecutive ♪ to find the real previous lyric
-                let prevIdx = root._lastRealLine(lines, g.startIdx - 1);
-                let prevText = prevIdx >= 0 ? groups[prevIdx].text : "";
-                let prevHex = (prevIdx >= 0 && groups[prevIdx].startIdx < groups[prevIdx].endIdx)
-                    ? root.colWaitingGroupHex : root.colWaitingSingleHex;
-                if (remaining > 0) {
-                    if (prevText) {
-                        line = `${prevText} (♪ ${remaining}s)`;
-                        rich = `<font color="${prevHex}">${root.escapeXml(prevText)}</font> <font color="${timerCol}">(♪ ${remaining}s)</font>`;
-                    } else {
-                        let t = root._tagged(`(Intro ♪ ${remaining}s)`);
-                        line = t.plain;
-                        rich = t.rich;
-                    }
-                } else if (prevText) {
-                    line = prevText;
-                    rich = `<font color="${prevHex}">${root.escapeXml(prevText)}</font>`;
-                } else {
-                    line = root.trackInfoPlain || "";
-                    rich = root.trackInfoRich || "";
-                }
-                dim = rich;
-                lit = rich;
-                break;
-            }
-            case root.mWait: {
-                if (remaining > 0) lineDur = remaining;
-                if (remaining > 0) {
-                    line = `${baseText} (♪ ${remaining}s)`;
-                    rich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font> <font color="${timerCol}">(♪ ${remaining}s)</font>`;
-                } else {
-                    line = baseText;
-                    rich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font>`;
-                }
-                dim = rich;
-                lit = rich;
-                break;
-            }
-            case root.mEndHoldMuted: {
-                lineDur = 4.5;
-                line = baseText;
-                rich = `<font color="${waitingHex}">${root.escapeXml(baseText)}</font>`;
-                dim = rich;
-                lit = rich;
-                break;
-            }
-            case root.mEndHoldLast: {
-                lineDur = 4.5;
-                let lastText = lines[root._lastRealLine(lines, g.startIdx - 1)].text;
-                line = lastText;
-                rich = `<font color="${root.colWaitingSingleHex}">${root.escapeXml(lastText)}</font>`;
-                dim = rich;
-                lit = rich;
-                break;
-            }
-            case root.mOutro: {
-                lineDur = 4.5;
-                if (root.trackInfoPlain) {
-                    line = `${root.trackInfoPlain} (Outro ♪)`;
-                    rich = `${root.trackInfoRich} <font color="${timerCol}">(Outro ♪)</font>`;
-                } else {
-                    line = "Outro ♪";
-                    rich = `<font color="${timerCol}">Outro ♪</font>`;
-                }
-                dim = rich;
-                lit = rich;
-                break;
-            }
-            case root.mEndFallback: {
-                lineDur = 4.5;
-                let li = root._lastRealLine(lines, g.startIdx - 1);
-                if (li >= 0) {
-                    line = lines[li].text;
-                    rich = `<font color="${root.colWaitingSingleHex}">${root.escapeXml(line)}</font>`;
-                } else {
-                    line = root.trackInfoPlain || "";
-                    rich = root.trackInfoRich || "";
-                }
-                dim = rich;
-                lit = rich;
-                break;
-            }
-            default:
-                break;
+                let colors = {
+                    timer: root.colTimerHex,
+                    waitingSingle: root.colWaitingSingleHex,
+                    waitingGroup: root.colWaitingGroupHex
+                };
+                let trackInfo = { plain: root.trackInfoPlain, rich: root.trackInfoRich };
+                let st = LyricsGrouping.buildStatusDisplay(mode, baseText, remaining, g, lines, groups, colors, trackInfo);
+                line = st.line;
+                rich = st.rich;
+                dim = st.dim;
+                lit = st.lit;
+                lineDur = st.lineDur;
             }
         }
 
@@ -2114,56 +808,14 @@ Singleton {
             wordSyncPos = root.lastWordSyncPos;
         }
 
-        let rawIdx = root._findLineIdx(lines, lineSyncPos);
-        root._rawIdx = rawIdx;
-        let currIdx = rawIdx;
+        let currIdx = root._findLineIdx(lines, lineSyncPos);
+        root._rawIdx = currIdx;
 
-        let mode = root.mIntro;
-        let remaining = 0;
-        let started = false;
-
-        if (currIdx < 0) {
-            remaining = Math.max(0, Math.ceil(lines[0].time - root.firstLineLead - lineSyncPos));
-        } else {
-            let g = groups[currIdx];
-            let lastLine = lines[g.endIdx];
-            let isMark = g.text === "♪";
-            let hasNext = g.nextStartIdx < n;
-            started = lineSyncPos >= lines[g.startIdx].time;
-
-            if (hasNext) {
-                let nextTime = lines[g.nextStartIdx].time;
-                remaining = Math.max(0, Math.ceil(nextTime - lineSyncPos));
-                if (isMark) {
-                    mode = root.mMark;
-                } else {
-                    let groupEnd = lastLine.endTime || (lastLine.time + 3.0);
-                    let waiting = wordSyncPos >= groupEnd && (nextTime - groupEnd) > 4.0 && (wordSyncPos - groupEnd) > 1.5;
-                    mode = waiting ? root.mWait : root.mSing;
-                }
-            } else {
-                let trackLen = activePlayer?.length || 0;
-                let holdSec = 4.5;
-                let groupEnd = lastLine.endTime || (lastLine.time + 4.0);
-                if (isMark) {
-                    let li = root._lastRealLine(lines, g.startIdx - 1);
-                    let sinceReal = 999;
-                    if (li >= 0) {
-                        let realEnd = lines[li].endTime || (lines[li].time + 4.0);
-                        if (realEnd > 0) sinceReal = wordSyncPos - realEnd;
-                    }
-                    if (li >= 0 && sinceReal < holdSec) mode = root.mEndHoldLast;
-                    else if (trackLen > 0) mode = root.mOutro;
-                    else mode = root.mEndFallback;
-                } else {
-                    let finished = wordSyncPos >= groupEnd;
-                    let since = wordSyncPos - groupEnd;
-                    if (finished && trackLen > 0 && (trackLen - groupEnd) > 6.0 && since >= holdSec) mode = root.mOutro;
-                    else if (finished && since >= holdSec) mode = root.mEndHoldMuted;
-                    else mode = root.mSing;
-                }
-            }
-        }
+        let trackLen = activePlayer?.length || 0;
+        let dm = LyricsGrouping.determineMode(currIdx, lines, groups, lineSyncPos, wordSyncPos, root.firstLineLead, trackLen);
+        let mode = dm.mode;
+        let remaining = dm.remaining;
+        let started = dm.started;
 
         // Anything string-ish only changes when one of these does (at most ~1/s outside of line changes)
         let wasMulti = root.isMultiLineGroup;
@@ -2183,54 +835,34 @@ Singleton {
             root._rebuildDisplay(mode, currIdx, remaining, started);
         }
 
-        let progress = 0.0;
         let curLine = (currIdx >= 0 && currIdx < n) ? lines[currIdx] : null;
-
-        // Independent fg/bg reveal geometry. Past lines in a multi-line group are fully
-        // lit via `pastWidth`; the active line exposes a foreground clip and, when present,
-        // a background clip that advances on its own timestamps.
         let leadProgress = 0.0, bgProgress = 0.0;
         let leadStart = 0.0, leadWidth = 0.0;
         let bgStart = 0.0, bgWidth = 0.0;
         let pastWidth = 0.0, hasBg = false;
-        if (mode === root.mSing && hasWS && curLine) {
-            let base = root.getGroupLineStartX(root._curGroup, currIdx, lines);
-            pastWidth = base;
-            if (!curLine.isWordSynced) {
-                // A non-word-synced line inside a word-synced payload (marker/unmatched
-                // line) has no sidereal sweep; show it fully lit when active.
-                leadStart = base;
-                leadWidth = curLine._totalWidth || 0;
-                leadProgress = 1.0;
-            } else {
-                let d0 = root._lineTrackData(curLine, 0);
-                if (d0) {
-                    leadStart = base + d0.startX;
-                    leadWidth = d0.width;
-                    leadProgress = d0.width > 0
-                        ? root._sweepWordSubset(d0.words, d0.bounds, d0.width, d0.startX, wordSyncPos, "_wiLead", curLine)
-                        : 1.0;
-                } else {
-                    leadProgress = 1.0;
-                }
-                let d1 = root._lineTrackData(curLine, 1);
-                if (d1) {
-                    hasBg = true;
-                    bgStart = base + d1.startX;
-                    bgWidth = d1.width;
-                    bgProgress = d1.width > 0
-                        ? root._sweepWordSubset(d1.words, d1.bounds, d1.width, d1.startX, wordSyncPos, "_wiBg", curLine)
-                        : 1.0;
-                }
-            }
-        }
+        let sweepX = 0.0;
 
+        if (mode === root.mSing && hasWS && curLine) {
+            let tg = VocalSweep.computeTrackGeometry(curLine, currIdx, root._curGroup, lines, wordSyncPos, root._getGroupBounds);
+            leadProgress = tg.leadProgress;
+            bgProgress = tg.bgProgress;
+            leadStart = tg.leadStart;
+            leadWidth = tg.leadWidth;
+            bgStart = tg.bgStart;
+            bgWidth = tg.bgWidth;
+            pastWidth = tg.pastWidth;
+            hasBg = tg.hasBg;
+            sweepX = tg.sweepX;
+        } else if (mode === root.mEndHoldLast || mode === root.mEndHoldMuted || mode === root.mWait) {
+            sweepX = curLine ? (curLine._totalWidth || 0.0) : 0.0;
+        }
+        if (root.currentSweepX !== sweepX) root.currentSweepX = sweepX;
+
+        let progress = 0.0;
         if (mode === root.mSing) {
             if (hasWS) {
                 progress = root.calculateGroupSweep(root._curGroup, currIdx, wordSyncPos) * root._progScale;
             } else if (currIdx >= 0 && currIdx < n) {
-                // Line-synced lyrics have no word clock. Advance the bar scroll over the
-                // line's known duration instead of jumping straight to the end.
                 let g = groups[currIdx];
                 let startSec = lines[g.startIdx].time || 0.0;
                 let dur = root.currentLineDuration > 0 ? root.currentLineDuration : 3.0;
@@ -2249,16 +881,6 @@ Singleton {
         if (root.currentBgWidth !== bgWidth) root.currentBgWidth = bgWidth;
         if (root.currentPastWidth !== pastWidth) root.currentPastWidth = pastWidth;
         if (root.currentLineHasBg !== hasBg) root.currentLineHasBg = hasBg;
-
-        let sweepX = 0.0;
-        if (mode === root.mSing && hasWS && curLine) {
-            let leadEdge = (leadWidth > 0 && leadProgress > 0) ? (leadStart + leadWidth * leadProgress) : 0.0;
-            let bgEdge = (hasBg && bgWidth > 0 && bgProgress > 0) ? (bgStart + bgWidth * bgProgress) : 0.0;
-            sweepX = Math.max(pastWidth, Math.max(leadEdge, bgEdge));
-        } else if (mode === root.mEndHoldLast || mode === root.mEndHoldMuted || mode === root.mWait) {
-            sweepX = curLine ? (curLine._totalWidth || 0.0) : 0.0;
-        }
-        if (root.currentSweepX !== sweepX) root.currentSweepX = sweepX;
 
         // Enable highlight slide one tick after entering a multi-line group so the entry itself isn't animated
         let shouldSlide = currIdx >= 0 && wasMulti;

@@ -318,7 +318,7 @@ Item {
             Connections {
                 target: root
                 function onHasLyricsChanged() {
-                    minFollowerX = 0;
+                    topBarTextContainer.minFollowerX = 0;
                     topBarMarqueeRow.x = 0;
                     if (!root.hasLyrics && topBarTextContainer.isOverflowing) {
                         topBarTextContainer.triggerTrackMarquee();
