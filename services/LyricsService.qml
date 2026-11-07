@@ -326,6 +326,7 @@ Singleton {
         root._mMode = -1;
         root._mIdx = -2;
         root._mRem = -1;
+        root._mStarted = false;
         root._curGroup = null;
         root._progScale = 1.0;
         root._sweeping = false;
@@ -1287,10 +1288,8 @@ Singleton {
             line._wordBounds = null;
             line._leadIdx = [];
             line._bgIdx = [];
-            line._leadStartX = 0;
-            line._leadEndX = 0;
-            line._bgStartX = 0;
-            line._bgEndX = 0;
+            line._trackData0 = null;
+            line._trackData1 = null;
             line._hasBgTrack = false;
             line._totalWidth = root.measurePixelWidth(line.text);
             return;
@@ -1300,13 +1299,20 @@ Singleton {
         let w = root.measurePixelWidth(joined);
         line._totalWidth = w > 0 ? w : root.measurePixelWidth(line.text);
         root._computeBounds(line);
-        root._assignTrackRegions(line);
+
+        // Separate tracks by track id (0 = foreground, 1 = background)
+        let lead = [], bg = [];
+        for (let i = 0; i < line.words.length; i++) {
+            if ((line.words[i].track || 0) === 1) bg.push(i);
+            else lead.push(i);
+        }
+        line._leadIdx = lead;
+        line._bgIdx = bg;
 
         // Repair squashed tail words or words whose durations were artificially squashed
         // (e.g. background vocal clamped to next line boundary <= 25ms, or single tail word < 120ms).
-        let modified = false;
         for (let track = 0; track <= 1; track++) {
-            let idx = (track === 1 ? line._bgIdx : line._leadIdx) || [];
+            let idx = track === 1 ? bg : lead;
             if (idx.length === 0) continue;
             let tw = [];
             for (let i = 0; i < idx.length; i++) tw.push(line.words[idx[i]]);
@@ -1326,7 +1332,6 @@ Singleton {
             }
 
             if (hasSquashed) {
-                modified = true;
                 if (tw.length === 1) {
                     tw[0].start = Math.max(line.time, tw[0].end - 0.200);
                 } else {
@@ -1350,34 +1355,40 @@ Singleton {
                 }
             }
         }
-        if (modified) {
-            root._computeBounds(line);
-            root._assignTrackRegions(line);
-        }
+        root._assignTrackRegions(line);
     }
 
     // Split a line's word bounds into its foreground (track 0) and background (track 1)
-    // regions. Both regions are measured against the full rendered line, so their pixel
-    // spans can be clipped independently without shifting the text.
+    // regions. Precomputes track subset arrays and bounding geometry once per line.
     function _assignTrackRegions(line) {
         let words = line.words || [];
         let bounds = line._wordBounds || [];
-        let lead = [];
-        let bg = [];
-        for (let i = 0; i < words.length; i++) {
-            if ((words[i].track || 0) === 1) bg.push(i);
-            else lead.push(i);
-        }
-        line._leadIdx = lead;
-        line._bgIdx = bg;
-        line._leadStartX = lead.length > 0 ? bounds[lead[0]].startX : 0;
-        line._leadEndX = lead.length > 0 ? bounds[lead[lead.length - 1]].endX : 0;
-        line._bgStartX = bg.length > 0 ? bounds[bg[0]].startX : line._leadEndX;
-        line._bgEndX = bg.length > 0 ? bounds[bg[bg.length - 1]].endX : line._bgStartX;
+        let lead = line._leadIdx || [];
+        let bg = line._bgIdx || [];
         line._hasBgTrack = bg.length > 0;
+
+        function _makeTrackData(idx) {
+            if (!idx || idx.length === 0) return null;
+            let tw = [];
+            let tb = [];
+            for (let i = 0; i < idx.length; i++) {
+                tw.push(words[idx[i]]);
+                tb.push(bounds[idx[i]]);
+            }
+            let sx = tb[0].startX;
+            let ex = tb[tb.length - 1].endX;
+            return {
+                words: tw,
+                bounds: tb,
+                startX: sx,
+                endX: ex,
+                width: Math.max(0.0, ex - sx)
+            };
+        }
+        line._trackData0 = _makeTrackData(lead);
+        line._trackData1 = _makeTrackData(bg);
     }
 
-    // Per word: pixel position after each character (cx) and the cumulative share of the word's
     // Per word: pixel position after each character (cx) and balanced character duration shares (ct).
     // Balances glyph count with visual width proportion so narrow characters do not crawl
     // and wide characters do not sprint.
@@ -1484,25 +1495,8 @@ Singleton {
 
     // Word subset + bounds for one render track, in the line's own pixel coordinates.
     function _lineTrackData(line, track) {
-        if (!line || !line.words || line.words.length === 0) return null;
-        let idx = (track === 1 ? line._bgIdx : line._leadIdx) || [];
-        if (idx.length === 0) return null;
-        let bounds = line._wordBounds || root._computeBounds(line);
-        let words = [];
-        let bs = [];
-        for (let i = 0; i < idx.length; i++) {
-            words.push(line.words[idx[i]]);
-            bs.push(bounds[idx[i]]);
-        }
-        let startX = bs[0].startX;
-        let endX = bs[bs.length - 1].endX;
-        return {
-            words: words,
-            bounds: bs,
-            startX: startX,
-            endX: endX,
-            width: Math.max(0.0, endX - startX)
-        };
+        if (!line) return null;
+        return track === 1 ? (line._trackData1 || null) : (line._trackData0 || null);
     }
 
     // Progress within one track's region (0 = untouched, 1 = fully swept).
@@ -2155,7 +2149,9 @@ Singleton {
                 if (d0) {
                     leadStart = base + d0.startX;
                     leadWidth = d0.width;
-                    leadProgress = root.getLineTrackProgress(curLine, 0, wordSyncPos);
+                    leadProgress = d0.width > 0
+                        ? root._sweepWordSubset(d0.words, d0.bounds, d0.width, d0.startX, wordSyncPos, "_wiLead", curLine)
+                        : 1.0;
                 } else {
                     leadProgress = 1.0;
                 }
@@ -2164,7 +2160,9 @@ Singleton {
                     hasBg = true;
                     bgStart = base + d1.startX;
                     bgWidth = d1.width;
-                    bgProgress = root.getLineTrackProgress(curLine, 1, wordSyncPos);
+                    bgProgress = d1.width > 0
+                        ? root._sweepWordSubset(d1.words, d1.bounds, d1.width, d1.startX, wordSyncPos, "_wiBg", curLine)
+                        : 1.0;
                 }
             }
         }

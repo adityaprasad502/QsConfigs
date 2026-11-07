@@ -243,7 +243,7 @@ def _lrc_json(path):
 def _parse_lrc_lines(lrc_dict_or_text):
     text = ""
     if isinstance(lrc_dict_or_text, dict):
-        text = lrc_dict_or_text.get("synced") or lrc_dict_or_text.get("plain") or ""
+        text = lrc_dict_or_text.get("synced") or lrc_dict_or_text.get("syncedLyrics") or ""
     elif isinstance(lrc_dict_or_text, str):
         text = lrc_dict_or_text
     lines = []
@@ -302,8 +302,52 @@ def _compute_lrc_offset(word_text, lrc_lines):
             return median_delta
     return 0.0
 
+PUNCT_BEFORE = r"[\s>\"'“‘(（\[]"
+PUNCT_AFTER = r"[\s<,\.!\?，。\"'“”()（）\]]|$"
+
+def _align_and_replace(res_line, w_words, cand_text):
+    l_words = re.findall(r"[\w]+(?:'[\w]+)*", cand_text)
+    if not l_words:
+        return res_line, 0
+    sm = difflib.SequenceMatcher(None, [_clean_token(w) for w in w_words], [_clean_token(w) for w in l_words])
+    replacements = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "replace" and (i2 - i1) == (j2 - j1):
+            for w_w, l_w in zip(w_words[i1:i2], l_words[j1:j2]):
+                if "*" in w_w and "*" not in l_w:
+                    pat = "^" + re.escape(_clean_token(w_w)).replace(r"\*", r"\w*") + "$"
+                    if re.match(pat, _clean_token(l_w), re.I) or (set(_clean_token(w_w)) == {"*"} and len(_clean_token(l_w)) >= 2):
+                        replacements.append((w_w, l_w))
+    if not replacements:
+        return res_line, 0
+
+    res = res_line
+    words_count = 0
+    for w_orig, l_clean in replacements:
+        escaped_w = re.escape(w_orig)
+        direct_pat = r"(?<=" + PUNCT_BEFORE + r")" + escaped_w + r"(?=" + PUNCT_AFTER + r")"
+        if re.search(direct_pat, res):
+            res = re.sub(direct_pat, l_clean, res, count=1)
+            words_count += 1
+            continue
+
+        tag_pat = "".join(re.escape(ch) if i == 0 else r"(?:<[^>]+>)?" + re.escape(ch) for i, ch in enumerate(w_orig))
+        m_tag = re.search(r"(<[^>]+>[^\w*]*)" + tag_pat + r"(?=" + PUNCT_AFTER + r")", res)
+        if m_tag:
+            first_tag = m_tag.group(1)
+            matched_span = m_tag.group(0)[len(first_tag):]
+            inner_tags = re.findall(r"<[^>]+>", matched_span)
+            all_tags = [first_tag] + inner_tags
+            if len(l_clean) == len(all_tags):
+                new_chunk = "".join(tag + ch for tag, ch in zip(all_tags, l_clean))
+            else:
+                new_chunk = all_tags[0] + l_clean + "".join(all_tags[1:])
+            res = res[:m_tag.start()] + new_chunk + res[m_tag.end():]
+            words_count += 1
+    return res, words_count
+
 def _restore_explicit_line(w_line, lrc_lines):
-    if "*" not in w_line:
+    if "*" not in w_line or not lrc_lines:
         return w_line, 0
 
     m = re.match(r"^\s*\[(\d+)(?:,\s*(\d+))?\]", w_line)
@@ -316,9 +360,11 @@ def _restore_explicit_line(w_line, lrc_lines):
             return w_line, 0
         t_w = int(m2.group(1)) * 60.0 + float(m2.group(2))
 
-    clean_w_line = re.sub(r"<[^>]+>", "", w_line)
+    clean_w_line = re.sub(r"(\*+)\s*<[^>]+>\s*", r"\1 ", w_line)
+    clean_w_line = re.sub(r"\s*<[^>]+>\s*(\*+)", r" \1", clean_w_line)
+    clean_w_line = re.sub(r"<[^>]+>", "", clean_w_line)
     clean_w_line = re.sub(r"^\s*\[[^\]]+\]", "", clean_w_line).strip()
-    w_words = re.findall(r"[\w*]+(?:[\'-][\w*]+)*", clean_w_line)
+    w_words = re.findall(r"[\w*]+(?:'[\w*]+)*", clean_w_line)
     if not w_words:
         return w_line, 0
 
@@ -338,64 +384,45 @@ def _restore_explicit_line(w_line, lrc_lines):
     if not candidates:
         return w_line, 0
 
-    # Score candidates: prioritize higher word overlap with non-masked words, then lower time difference
     def score_cand(item):
         diff, txt = item
-        c_tokens = set(_clean_token(w) for w in re.findall(r"[\w]+(?:[\'-][\w]+)*", txt))
+        c_tokens = set(_clean_token(w) for w in re.findall(r"[\w]+(?:'[\w]+)*", txt))
         overlap = sum(1 for w in w_clean_tokens if w in c_tokens)
         return (-overlap, diff)
 
     candidates.sort(key=score_cand)
     cand_lrc = candidates[0][1]
+    return _align_and_replace(w_line, w_words, cand_lrc)
 
-    l_words = re.findall(r"[\w]+(?:[\'-][\w]+)*", cand_lrc)
-    if not l_words:
+def _restore_from_plain_lines(w_line, plain_lines):
+    if "*" not in w_line or not plain_lines:
         return w_line, 0
-
-    sm = difflib.SequenceMatcher(None, [_clean_token(w) for w in w_words], [_clean_token(w) for w in l_words])
-    replacements = []
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "replace" and (i2 - i1) == (j2 - j1):
-            for w_w, l_w in zip(w_words[i1:i2], l_words[j1:j2]):
-                if "*" in w_w and "*" not in l_w:
-                    pat = "^" + re.escape(_clean_token(w_w)).replace(r"\*", r"\w*") + "$"
-                    if re.match(pat, _clean_token(l_w), re.I) or (set(_clean_token(w_w)) == {"*"} and len(_clean_token(l_w)) >= 2):
-                        replacements.append((w_w, l_w))
-
-    if not replacements:
-        return w_line, 0
-
+    clean_w_line = re.sub(r"(\*+)\s*<[^>]+>\s*", r"\1 ", w_line)
+    clean_w_line = re.sub(r"\s*<[^>]+>\s*(\*+)", r" \1", clean_w_line)
+    clean_w_line = re.sub(r"<[^>]+>", "", clean_w_line)
+    clean_w_line = re.sub(r"^\s*\[[^\]]+\]", "", clean_w_line).strip()
+    segments = [s.strip() for s in re.split(r"\s*•\s*", clean_w_line) if "*" in s]
     res = w_line
-    words_count = 0
-    PUNCT_AFTER = r"[\s<,\.!\?，。\"'“”()（）]|$"
-    for w_orig, l_clean in replacements:
-        escaped_w = re.escape(w_orig)
-        direct_pat = r"(?<=[\s>])" + escaped_w + r"(?=" + PUNCT_AFTER + r")"
-        if re.search(direct_pat, res):
-            res = re.sub(direct_pat, l_clean, res, count=1)
-            words_count += 1
+    total_cnt = 0
+    for seg in segments:
+        w_words = re.findall(r"[\w*]+(?:'[\w*]+)*", seg)
+        w_clean_tokens = [_clean_token(w) for w in w_words if "*" not in w]
+        if not w_clean_tokens:
             continue
-
-        tag_pat = r""
-        for i, ch in enumerate(w_orig):
-            if i > 0:
-                tag_pat += r"(?:<[^>]+>)?"
-            tag_pat += re.escape(ch)
-
-        m_tag = re.search(r"(<[^>]+>)" + tag_pat + r"(?=" + PUNCT_AFTER + r")", res)
-        if m_tag:
-            first_tag = m_tag.group(1)
-            matched_span = m_tag.group(0)[len(first_tag):]
-            inner_tags = re.findall(r"<[^>]+>", matched_span)
-            all_tags = [first_tag] + inner_tags
-            if len(l_clean) == len(all_tags):
-                new_chunk = "".join(tag + ch for tag, ch in zip(all_tags, l_clean))
-            else:
-                new_chunk = all_tags[0] + l_clean + "".join(all_tags[1:])
-            res = res[:m_tag.start()] + new_chunk + res[m_tag.end():]
-            words_count += 1
-
-    return res, words_count
+        def score_p(p_line):
+            p_words = re.findall(r"[\w]+(?:'[\w]+)*", p_line)
+            p_tokens = set(_clean_token(w) for w in p_words)
+            overlap = sum(1 for w in w_clean_tokens if w in p_tokens)
+            diff = abs(len(w_words) - len(p_words))
+            return (-overlap, diff)
+        candidates = sorted(plain_lines, key=score_p)
+        best_cand = candidates[0]
+        best_p_tokens = set(_clean_token(w) for w in re.findall(r"[\w]+(?:'[\w]+)*", best_cand))
+        overlap = sum(1 for w in w_clean_tokens if w in best_p_tokens)
+        if overlap >= max(1, len(w_clean_tokens) * 0.4):
+            res, cnt = _align_and_replace(res, w_words, best_cand)
+            total_cnt += cnt
+    return res, total_cnt
 
 COMMON_MASKS = [
     (re.compile(pat, re.I), sy._d(h)) for pat, h in [
@@ -406,7 +433,7 @@ COMMON_MASKS = [
         (r'\b(?:ni\*+a|n\*+a)(s)?\b', '6e69676761'),
         (r'\bd\*+k(s)?\b', '6469636b'),
         (r'\bp\*+y\b', '7075737379'),
-        (r'\ba\*+s\b|((?:^|[\s>]))a\*{2}(?=[\s<,\.!\?，。\"\'“”()（）]|$)', '617373'),
+        (r'\ba\*+s\b|((?:^|[\s>\"\'“‘(（\[]))a\*{2}(?=[\s<,\.!\?，。\"\'“”()（）\]]|$)', '617373'),
         (r'\bs\*x\b', '736578'),
         (r'\bh\*e(\'s|s)?\b', '686f65'),
         (r'\bc\*+t(s)?\b', '63756e74'),
@@ -417,9 +444,11 @@ COMMON_MASKS = [
         (r'\bw\*+d\b', '77656564'),
         (r'\bd\*+e\b', '646f7065'),
         (r'\bc\*{4,6}e\b', '636f6465696e65'),
-        (r'((?:what|who) the )\*{3,4}(?=[\s\?<\.,\"\'“”()（）]|$)', '6675636b'),
-        (r'((?:^|[\s>]))\*{3,4}( a )', '6675636b'),
-        (r'((?:^|[\s>]))\*{4}(ed|ing|in\')\b', '6675636b'),
+        (r'((?:what|who) the\s*(?:<[^>]+>\s*)?)\*{3,4}(?=[\s\?<\.,\"\'“”()（）\]]|$)', '6675636b'),
+        (r'((?:^|[\s>\"\'“‘(（\[]))\*{3,4}( a )', '6675636b'),
+        (r'((?:^|[\s>\"\'“‘(（\[]))\*{4}(ed|ing|in\')\b', '6675636b'),
+        (r'((?:some\s*(?:<[^>]+>\s*)?more,?\s*(?:<[^>]+>\s*)?))\*{3,5}(?=[\s<,\.!\?，。\"\'“”()（）\]]|$)', '6e69676761'),
+        (r'((?:type\s*(?:<[^>]+>\s*)?of\s*(?:<[^>]+>\s*)?))\*{3,5}(?=[\s<,\.!\?，。\"\'“”()（）\]]|$)', '6e69676761'),
     ]
 ]
 
@@ -442,6 +471,10 @@ def restore_explicit_lyrics(word_text, lrc_source):
     if not word_text or "*" not in word_text:
         return word_text, 0, 0
     lrc_lines = _parse_lrc_lines(lrc_source) if lrc_source else []
+    plain_lines = []
+    if isinstance(lrc_source, dict):
+        p_txt = lrc_source.get("plain") or lrc_source.get("plainLyrics") or ""
+        plain_lines = [l.strip() for l in p_txt.splitlines() if l.strip() and "*" not in l]
     if lrc_lines:
         offset = _compute_lrc_offset(word_text, lrc_lines)
         if offset != 0.0:
@@ -455,6 +488,9 @@ def restore_explicit_lyrics(word_text, lrc_source):
             w_cnt = 0
             if lrc_lines:
                 new_line, cnt = _restore_explicit_line(new_line, lrc_lines)
+                w_cnt += cnt
+            if "*" in new_line and plain_lines:
+                new_line, cnt = _restore_from_plain_lines(new_line, plain_lines)
                 w_cnt += cnt
             if "*" in new_line:
                 new_line, cnt = _unmask_common_patterns(new_line)
@@ -801,6 +837,25 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
     lrc_pending = need_lrc
     lrc_definitive = False
 
+    def _try_restore_and_save(lrc_source, label):
+        nonlocal best_word
+        if not (best_word and "*" in best_word[1]):
+            return
+        old_name, old_text, old_score = best_word
+        restored, words_cnt, lines_cnt = restore_explicit_lyrics(old_text, lrc_source)
+        if words_cnt > 0:
+            restored = sy.normalize_all_caps(restored)
+            _log(f"[RESTORE] {old_name}: Restored {words_cnt} explicit words ({lines_cnt} lines) using {label}")
+            best_word = (old_name, restored, old_score)
+            emit({"k": "word", "text": restored})
+            if path:
+                cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": restored, "src": old_name})
+
+    def _log_complete():
+        elapsed = time.monotonic() - start
+        sz_str = f" ({_file_sz(path)})" if _file_sz(path) else ""
+        _log(f"[COMPLETE] Done in {elapsed:.2f}s: using {best_word[0]} karaoke (score: {best_word[2]}){sz_str}")
+
     while lrc_pending or words_pending:
         t = time.monotonic() - start
         wait = PROVIDER_BUDGET - t
@@ -813,16 +868,7 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
             if lrc_pending:
                 _log(f"[TIMEOUT] lrc ({t:.2f}s): Exceeded {PROVIDER_BUDGET:.0f}s budget")
                 lrc_pending = False
-                if best_word and "*" in best_word[1]:
-                    old_name, old_text, old_score = best_word
-                    restored, words_cnt, lines_cnt = restore_explicit_lyrics(old_text, None)
-                    if words_cnt > 0:
-                        restored = sy.normalize_all_caps(restored)
-                        _log(f"[RESTORE] {old_name}: Restored {words_cnt} explicit words ({lines_cnt} lines) using fallback")
-                        best_word = (old_name, restored, old_score)
-                        emit({"k": "word", "text": restored})
-                        if path:
-                            cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": restored, "src": old_name})
+                _try_restore_and_save(None, "fallback")
             continue
         try:
             ev = events.get(timeout=wait)
@@ -838,19 +884,11 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
                 else:
                     lrc = {"synced": sy.normalize_all_caps(result.get("syncedLyrics") or ""), "plain": sy.normalize_all_caps(result.get("plainLyrics") or "")}
                     if best_word:
-                        old_name, old_text, old_score = best_word
-                        restored, words_cnt, lines_cnt = restore_explicit_lyrics(old_text, lrc)
-                        if words_cnt > 0:
-                            restored = sy.normalize_all_caps(restored)
-                            _log(f"[RESTORE] {old_name}: Restored {words_cnt} explicit words ({lines_cnt} lines) using lrc")
-                            best_word = (old_name, restored, old_score)
-                            emit({"k": "word", "text": restored})
-                        if path:
-                            cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": best_word[1], "src": old_name})
+                        _try_restore_and_save(lrc, "lrc")
+                        if path and not ("*" in best_word[1]):
+                            cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": best_word[1], "src": best_word[0]})
                         if words_pending == 0:
-                            elapsed = time.monotonic() - start
-                            sz_str = f" ({_file_sz(path)})" if _file_sz(path) else ""
-                            _log(f"[COMPLETE] Done in {elapsed:.2f}s: using {best_word[0]} karaoke (score: {best_word[2]}){sz_str}")
+                            _log_complete()
                             return
                     else:
                         emit({"k": "lrc", "synced": lrc["synced"], "plain": lrc["plain"]})
@@ -859,20 +897,9 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
                             if path:
                                 cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": 0})
             else:
-                if best_word and "*" in best_word[1]:
-                    old_name, old_text, old_score = best_word
-                    restored, words_cnt, lines_cnt = restore_explicit_lyrics(old_text, None)
-                    if words_cnt > 0:
-                        restored = sy.normalize_all_caps(restored)
-                        _log(f"[RESTORE] {old_name}: Restored {words_cnt} explicit words ({lines_cnt} lines) using fallback")
-                        best_word = (old_name, restored, old_score)
-                        emit({"k": "word", "text": restored})
-                        if path:
-                            cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": restored, "src": old_name})
+                _try_restore_and_save(None, "fallback")
                 if words_pending == 0 and best_word is not None:
-                    elapsed = time.monotonic() - start
-                    sz_str = f" ({_file_sz(path)})" if _file_sz(path) else ""
-                    _log(f"[COMPLETE] Done in {elapsed:.2f}s: using {best_word[0]} karaoke (score: {best_word[2]}){sz_str}")
+                    _log_complete()
                     return
         else:
             words_pending -= 1
@@ -906,18 +933,13 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
             if words_pending == 0 and best_word is not None:
                 if lrc_pending:
                     continue  # Wait for line-synced lyrics to un-censor asterisks
-                elapsed = time.monotonic() - start
-                sz_str = f" ({_file_sz(path)})" if _file_sz(path) else ""
-                _log(f"[COMPLETE] Done in {elapsed:.2f}s: using {best_word[0]} karaoke (score: {best_word[2]}){sz_str}")
+                _log_complete()
                 return
 
     if best_word is not None:
-        if lrc_pending:
-            if not ("*" in best_word[1]):
-                _log("[DISCARD] lrc: Karaoke found, line search canceled")
-        elapsed = time.monotonic() - start
-        sz_str = f" ({_file_sz(path)})" if _file_sz(path) else ""
-        _log(f"[COMPLETE] Done in {elapsed:.2f}s: using {best_word[0]} karaoke (score: {best_word[2]}){sz_str}")
+        if lrc_pending and not ("*" in best_word[1]):
+            _log("[DISCARD] lrc: Karaoke found, line search canceled")
+        _log_complete()
         return
 
     # No word-synced result
