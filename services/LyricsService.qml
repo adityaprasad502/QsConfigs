@@ -31,6 +31,17 @@ Singleton {
     property int currentFetchId: 0
     property bool loading: false
     property string loadingStatus: ""
+    property string lyricsSource: ""
+    readonly property string lyricsSourceDisplayName: {
+        let s = (lyricsSource || "").toLowerCase();
+        if (s.includes("src4")) return "Apple Music";
+        if (s.includes("src5") || s.includes("amll")) return "AMLL DB";
+        if (s.includes("src1") || s.includes("kugou")) return "Kugou Music";
+        if (s.includes("src2") || s.includes("qq")) return "QQ Music";
+        if (s.includes("src3") || s.includes("netease")) return "NetEase Music";
+        if (s.includes("lrc") || s.includes("lrclib")) return "LRCLIB";
+        return s ? s : (hasWordSync ? "Apple Music" : "LRCLIB");
+    }
     property string currentLyricLine: ""
     property string currentLyricLineRich: ""
     property string currentLyricLineDim: ""
@@ -174,6 +185,75 @@ Singleton {
     }
 
     // ------------------------------------------------------------------------------------------
+    // Lyrics offset calibration (in milliseconds, positive = earlier, negative = later)
+    // ------------------------------------------------------------------------------------------
+    property int lyricsOffsetMs: 0
+    readonly property real lyricsOffsetSec: lyricsOffsetMs / 1000.0
+    // Set once the user calibrates the current track, so a late fetch result can't
+    // overwrite the offset with the value it read from cache when it started.
+    property bool _offsetDirty: false
+    // Snapshot of what to persist, so a track change during the save debounce
+    // can't write the offset onto the wrong song.
+    property string _offsetSaveTitle: ""
+    property string _offsetSaveArtist: ""
+    property int _offsetSaveMs: 0
+
+    function adjustLyricsOffset(deltaMs) {
+        root.setLyricsOffset(root.lyricsOffsetMs + deltaMs);
+    }
+
+    function setLyricsOffset(ms) {
+        let clamped = Math.max(-10000, Math.min(10000, Math.round(ms)));
+        if (root.lyricsOffsetMs === clamped) return;
+        root.lyricsOffsetMs = clamped;
+        root._offsetDirty = true;
+        root.lastWordSyncPos = -1;
+        root._rawIdx = -1;
+        root.seekEpoch++;
+        Qt.callLater(root.tick);
+
+        let tName = StringUtils.cleanMusicTitle(root.currentTrackName) || root.currentTrackName || activePlayer?.trackTitle || "";
+        let tArtist = root.currentArtistName || activePlayer?.trackArtist || "";
+        let cacheKey = (tName + "___" + tArtist).toLowerCase();
+        if (root.lyricCache[cacheKey]) {
+            root.lyricCache[cacheKey].offset_ms = clamped;
+        }
+
+        root._offsetSaveTitle = tName;
+        root._offsetSaveArtist = tArtist;
+        root._offsetSaveMs = clamped;
+        offsetSaveDebounce.restart();
+    }
+
+    function resetLyricsOffset() {
+        root.setLyricsOffset(0);
+    }
+
+    Timer {
+        id: offsetSaveDebounce
+        interval: 500
+        repeat: false
+        onTriggered: {
+            if (!root._offsetSaveTitle) return;
+            offsetSaveProc.command = [
+                "python3",
+                Quickshell.shellPath("scripts/lyrics/fetch_lyrics.py"),
+                "--set-offset",
+                root._offsetSaveTitle,
+                root._offsetSaveArtist,
+                String(root._offsetSaveMs),
+                root._cacheDir
+            ];
+            offsetSaveProc.running = true;
+        }
+    }
+
+    Process {
+        id: offsetSaveProc
+        running: false
+    }
+
+    // ------------------------------------------------------------------------------------------
     // Fetching (scripts/lyrics/fetch_lyrics.py streams JSON lines: lrc -> word -> exit)
     // ------------------------------------------------------------------------------------------
     property var _job: null          // { id, key, gotWord, shown, best, definiteNone }
@@ -250,6 +330,7 @@ Singleton {
         root.activeLineStartFraction = 0.0;
         root.activeLineEndFraction = 1.0;
         root.nextLyricLine = "";
+        root.lyricsSource = "";
         root._resetSyncState();
     }
 
@@ -277,6 +358,8 @@ Singleton {
                 console.warn("[Lyrics] session cache hit:", `"${cleanTrack}" - "${cleanArtist}"`);
                 root.loading = false;
                 root.loadingStatus = "";
+                if (!root._offsetDirty)
+                    root.lyricsOffsetMs = cached.offset_ms || 0;
                 root.parseLyricsResponse(cached);
                 return;
             }
@@ -317,17 +400,25 @@ Singleton {
             return;
         }
 
+        if (ev.offset_ms !== undefined && !root._offsetDirty) {
+            root.lyricsOffsetMs = parseInt(ev.offset_ms) || 0;
+        }
+
+        if (ev.src) {
+            root.lyricsSource = ev.src;
+        }
+
         if (ev.k === "word") {
             if (!ev.text) return;
             let parsed = root.parseLyricsString(ev.text);
             if (parsed.length > 0 && parsed.some(function(l) { return l.isWordSynced; })) {
                 job.gotWord = true;
-                job.best = { syncedLyrics: ev.text, lines: parsed, hasWordSync: true };
+                job.best = { syncedLyrics: ev.text, lines: parsed, hasWordSync: true, offset_ms: root.lyricsOffsetMs };
                 root.precompileAndSetLyrics(parsed, true);
             }
         } else if (ev.k === "lrc") {
             if (job.gotWord) return;
-            let data = { syncedLyrics: ev.synced || "", plainLyrics: ev.plain || "" };
+            let data = { syncedLyrics: ev.synced || "", plainLyrics: ev.plain || "", offset_ms: root.lyricsOffsetMs };
             job.best = data;
             job.shown = true;
             root.parseLyricsResponse(data);
@@ -457,6 +548,8 @@ Singleton {
 
         root.currentTrackName = newTitle;
         root.currentArtistName = newArtist;
+        root.lyricsOffsetMs = 0;
+        root._offsetDirty = false;
         let initPos = activePlayer?.position || 0;
         root.lastMprisPos = initPos;
         root.lastKnownPosition = initPos;
@@ -794,7 +887,7 @@ Singleton {
 
         let now = Date.now();
         let elapsedSec = root.lastKnownTimestamp > 0 ? (now - root.lastKnownTimestamp) / 1000.0 : 0;
-        let currentPos = root.lastKnownPosition + elapsedSec;
+        let currentPos = root.lastKnownPosition + elapsedSec + root.lyricsOffsetSec;
         let hasWS = root.hasWordSync;
 
         // For word-by-word karaoke, words and lines synchronize precisely with audio playback (0s lead).

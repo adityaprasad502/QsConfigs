@@ -117,11 +117,6 @@ Item {
         anchors.fill: parent
         hoverEnabled: true
         acceptedButtons: Qt.MiddleButton | Qt.BackButton | Qt.ForwardButton | Qt.RightButton | Qt.LeftButton
-        onDoubleClicked: (event) => {
-            if (event.button === Qt.LeftButton) {
-                GlobalStates.sidebarLeftOpen = !GlobalStates.sidebarLeftOpen;
-            }
-        }
         onPressed: (event) => {
             if (event.button === Qt.MiddleButton) {
                 if (root.hasMedia && activePlayer) activePlayer.togglePlaying();
