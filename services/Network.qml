@@ -34,15 +34,18 @@ Singleton {
 
     property string networkName: ""
     property int networkStrength
+    readonly property int currentStrength: (root.active?.strength && root.active.strength > 0)
+        ? root.active.strength
+        : (root.networkStrength || 0)
     property string materialSymbol: root.ethernet
         ? "lan"
         : (root.wifiEnabled && root.wifiStatus === "connected")
             ? (
-                (root.active?.strength ?? 0) > 83 ? "signal_wifi_4_bar" :
-                (root.active?.strength ?? 0) > 67 ? "network_wifi" :
-                (root.active?.strength ?? 0) > 50 ? "network_wifi_3_bar" :
-                (root.active?.strength ?? 0) > 33 ? "network_wifi_2_bar" :
-                (root.active?.strength ?? 0) > 17 ? "network_wifi_1_bar" :
+                root.currentStrength > 83 ? "signal_wifi_4_bar" :
+                root.currentStrength > 67 ? "network_wifi" :
+                root.currentStrength > 50 ? "network_wifi_3_bar" :
+                root.currentStrength > 33 ? "network_wifi_2_bar" :
+                root.currentStrength > 17 ? "network_wifi_1_bar" :
                 "signal_wifi_0_bar"
             )
             : (root.wifiStatus === "connecting")
@@ -157,10 +160,19 @@ Singleton {
     // Status update
     function update() {
         updateConnectionType.startCheck();
-        wifiStatusProcess.running = true
+        wifiStatusProcess.running = true;
         updateNetworkName.running = true;
         updateNetworkStrength.running = true;
         updateInterfaceName.running = true;
+        getNetworks.running = true;
+    }
+
+    Timer {
+        id: periodicSignalCheck
+        interval: 10000
+        running: root.wifiEnabled && root.wifiStatus === "connected"
+        repeat: true
+        onTriggered: updateNetworkStrength.running = true
     }
 
     // `ip route show default` output: "default via <gw> dev <iface> ..."
@@ -245,11 +257,11 @@ Singleton {
 
     Process {
         id: updateNetworkName
-        command: ["sh", "-c", "nmcli -t -f NAME c show --active | head -1"]
+        command: ["sh", "-c", "nmcli -t -f NAME,TYPE c show --active | awk -F: '$2 != \"loopback\" {print $1; exit}'"]
         running: true
-        stdout: SplitParser {
-            onRead: data => {
-                root.networkName = data;
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.networkName = text.trim();
             }
         }
     }
@@ -258,9 +270,9 @@ Singleton {
         id: updateNetworkStrength
         running: true
         command: ["sh", "-c", "nmcli -f IN-USE,SIGNAL,SSID device wifi | awk '/^\\*/{if (NR!=1) {print $2}}'"]
-        stdout: SplitParser {
-            onRead: data => {
-                root.networkStrength = parseInt(data);
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.networkStrength = parseInt(text.trim()) || 0;
             }
         }
     }
