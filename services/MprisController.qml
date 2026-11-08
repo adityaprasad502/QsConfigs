@@ -27,7 +27,76 @@ Singleton {
 	property MprisPlayer activePlayer: (trackedPlayer && isRealPlayer(trackedPlayer)) ? trackedPlayer : (root.players[0] ?? null);
 	signal trackChanged(reverse: bool);
 
-	onPlayersChanged: Qt.callLater(root.updateBestPlayer);
+	// Cover art preloading & caching
+	property var cachedArt: ({})
+	property var _activeArtDownloads: ({})
+	signal artPreloaded(string artUrl, string filePath)
+
+	function isArtCached(artUrl: string): bool {
+		if (!artUrl || artUrl.length === 0) return false;
+		if (artUrl.startsWith("file://")) return true;
+		return !!cachedArt[artUrl];
+	}
+
+	function preloadArt(artUrl: string) {
+		if (!artUrl || artUrl.length === 0) return;
+		if (artUrl.startsWith("file://")) {
+			cachedArt[artUrl] = FileUtils.trimFileProtocol(artUrl);
+			return;
+		}
+		if (cachedArt[artUrl] || _activeArtDownloads[artUrl]) {
+			return;
+		}
+
+		let artFileName = Qt.md5(artUrl);
+		let artFilePath = `${Directories.coverArt}/${artFileName}`;
+
+		_activeArtDownloads[artUrl] = true;
+
+		let proc = artDownloadProcComp.createObject(root, {
+			targetUrl: artUrl,
+			targetPath: artFilePath
+		});
+		if (proc) {
+			proc.running = true;
+		} else {
+			delete _activeArtDownloads[artUrl];
+		}
+	}
+
+	Component {
+		id: artDownloadProcComp
+		Process {
+			id: dlProc
+			property string targetUrl: ""
+			property string targetPath: ""
+			command: [
+				"bash", "-c",
+				`mkdir -p '${Directories.coverArt}' && { [ -f '${targetPath}' ] || curl -4 -sSL '${StringUtils.shellSingleQuoteEscape(targetUrl)}' -o '${targetPath}'; }`
+			]
+			onExited: (exitCode, exitStatus) => {
+				delete root._activeArtDownloads[dlProc.targetUrl];
+				if (exitCode === 0) {
+					root.cachedArt[dlProc.targetUrl] = dlProc.targetPath;
+					root.artPreloaded(dlProc.targetUrl, dlProc.targetPath);
+				}
+				dlProc.destroy();
+			}
+		}
+	}
+
+	Component.onCompleted: {
+		for (const p of Mpris.players.values) {
+			if (p.trackArtUrl) root.preloadArt(p.trackArtUrl);
+		}
+	}
+
+	onPlayersChanged: {
+		Qt.callLater(root.updateBestPlayer);
+		for (const p of Mpris.players.values) {
+			if (p.trackArtUrl) root.preloadArt(p.trackArtUrl);
+		}
+	}
 	onHasActiveDesktopSpotifyChanged: {
 		root._playerFilterRevision++;
 		Qt.callLater(root.updateBestPlayer);
@@ -211,6 +280,7 @@ Singleton {
 
 			Component.onCompleted: {
 				Qt.callLater(root.updateBestPlayer);
+				if (modelData.trackArtUrl) root.preloadArt(modelData.trackArtUrl);
 			}
 
 			Component.onDestruction: {
@@ -233,6 +303,9 @@ Singleton {
 				if (real !== inList) {
 					Qt.callLater(() => root._playerFilterRevision++);
 				}
+				if (modelData.trackArtUrl) {
+					root.preloadArt(modelData.trackArtUrl);
+				}
 				if (modelData.isPlaying) {
 					if (!root.trackedPlayer || !root.trackedPlayer.isPlaying || root.getPlayerScore(modelData) >= root.getPlayerScore(root.trackedPlayer)) {
 						root.trackedPlayer = modelData;
@@ -252,6 +325,10 @@ Singleton {
 
 			function onTrackTitleChanged() {
 				evaluateState();
+			}
+
+			function onTrackArtUrlChanged() {
+				if (modelData.trackArtUrl) root.preloadArt(modelData.trackArtUrl);
 			}
 
 			function onPositionChanged() {
@@ -284,6 +361,9 @@ Singleton {
 		}
 
 		function onTrackArtUrlChanged() {
+			if (root.activePlayer?.trackArtUrl) {
+				root.preloadArt(root.activePlayer.trackArtUrl);
+			}
 			// console.log("arturl:", activePlayer.trackArtUrl)
 			// root.updateTrack();
 			if (root.activePlayer && root.activeTrack && root.activePlayer.uniqueId == root.activeTrack.uniqueId && root.activePlayer.trackArtUrl != root.activeTrack.artUrl) {
@@ -358,6 +438,9 @@ Singleton {
 
 	function updateTrack() {
 		//console.log(`update: ${this.activePlayer?.trackTitle ?? ""} : ${this.activePlayer?.trackArtists}`)
+		if (this.activePlayer?.trackArtUrl) {
+			root.preloadArt(this.activePlayer.trackArtUrl);
+		}
 		this.activeTrack = {
 			uniqueId: this.activePlayer?.uniqueId ?? 0,
 			artUrl: this.activePlayer?.trackArtUrl ?? "",
