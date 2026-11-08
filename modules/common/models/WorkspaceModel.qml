@@ -20,11 +20,16 @@ NestableObject {
     readonly property bool specialWorkspaceActive: specialWorkspaceName !== ""
 
     property list<bool> occupied: []
-    property list<var> biggestWindow: occupied.map((_, index) => {
-        const wsId = getWorkspaceIdAt(index);
-        var biggestWindow = HyprlandData.biggestWindowForWorkspace(wsId);
-        return biggestWindow;
-    })
+    property list<var> biggestWindow: []
+
+    function updateBiggestWindows() {
+        root.biggestWindow = Array.from({
+            length: root.shownCount
+        }, (_, index) => {
+            const wsId = getWorkspaceIdAt(index);
+            return HyprlandData.biggestWindowForWorkspace(wsId);
+        });
+    }
 
     function getWorkspaceId(group, index) {
         return group * root.shownCount + index + 1;
@@ -41,6 +46,7 @@ NestableObject {
             const thisWorkspaceId = getWorkspaceId(root.group, i);
             return Hyprland.workspaces.values.some(ws => ws.id === thisWorkspaceId);
         });
+        root.updateBiggestWindows();
     }
 
     // Occupied workspace updates
@@ -55,6 +61,12 @@ NestableObject {
         target: Hyprland
         function onFocusedWorkspaceChanged() {
             root.updateWorkspaceOccupied();
+        }
+    }
+    Connections {
+        target: HyprlandData
+        function onWindowListChanged() {
+            root.updateBiggestWindows();
         }
     }
     onGroupChanged: {

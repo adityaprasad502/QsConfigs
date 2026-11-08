@@ -125,6 +125,8 @@ Singleton {
                     notifications: [],
                     time: 0
                 };
+            } else if (!groups[notif.appName].appIcon && notif.appIcon) {
+                groups[notif.appName].appIcon = notif.appIcon;
             }
             groups[notif.appName].notifications.push(notif);
             // Always set to the latest time in the group
@@ -161,6 +163,18 @@ Singleton {
 
         onNotification: (notification) => {
             notification.tracked = true
+            let resolvedIcon = notification.appIcon ?? "";
+            if (!resolvedIcon && notification.desktopEntry) {
+                const de = DesktopEntries.byId(notification.desktopEntry) || DesktopEntries.heuristicLookup(notification.desktopEntry);
+                if (de && de.icon) resolvedIcon = de.icon;
+            }
+            if (!resolvedIcon && notification.appName) {
+                const guessed = AppSearch.guessIcon(notification.appName);
+                if (guessed && guessed !== "image-missing" && guessed !== "application-x-executable") {
+                    resolvedIcon = guessed;
+                }
+            }
+
             const newNotifObject = notifComponent.createObject(root, {
                 "notificationId": notification.id + root.idOffset,
                 "notification": notification,
@@ -168,7 +182,7 @@ Singleton {
                     "identifier": action.identifier,
                     "text": action.text,
                 })),
-                "appIcon": notification.appIcon ?? "",
+                "appIcon": resolvedIcon,
                 "appName": notification.appName ?? "",
                 "body": notification.body ?? "",
                 "image": notification.image ?? "",
@@ -281,13 +295,17 @@ Singleton {
         onLoaded: {
             const fileContents = notifFileView.text()
             root.list = JSON.parse(fileContents).map((notif) => {
+                let img = notif.image ?? "";
+                if (img.startsWith("image://qsimage/")) {
+                    img = "";
+                }
                 return notifComponent.createObject(root, {
                     "notificationId": notif.notificationId,
                     "actions": [], // Notification actions are meaningless if they're not tracked by the server or the sender is dead
                     "appIcon": notif.appIcon ?? "",
                     "appName": notif.appName ?? "",
                     "body": notif.body ?? "",
-                    "image": notif.image ?? "",
+                    "image": img,
                     "summary": notif.summary ?? "",
                     "time": notif.time ?? 0,
                     "urgency": notif.urgency ?? "normal",

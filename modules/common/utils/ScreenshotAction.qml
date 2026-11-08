@@ -45,7 +45,7 @@ Singleton {
             case ScreenshotAction.Action.Copy:
                 if (saveDir === "") {
                     // not saving the screenshot, just copy to clipboard
-                    return ["bash", "-c", `${cropToStdout} | wl-copy && ${cleanup}`]
+                    return ["bash", "-c", `${cropToStdout} | wl-copy && notify-send 'Screenshot copied' 'Copied to clipboard' -a 'Screen Snip' -i edit-cut && ${cleanup}`]
                     break;
                 }
                 return [
@@ -54,6 +54,7 @@ Singleton {
                     saveFileName="screenshot-$(date '+%Y-%m-%d_%H.%M.%S').png" && \
                     savePath="${saveDir}/$saveFileName" && \
                     ${cropToStdout} | tee >(wl-copy) > "$savePath" && \
+                    notify-send 'Screenshot saved' "Saved to $savePath and copied to clipboard" -a 'Screen Snip' -i "$savePath" && \
                     ${cleanup}`
                 ]
 
@@ -65,7 +66,7 @@ Singleton {
                 return ["bash", "-c", `${cropInPlace} && xdg-open "${root.imageSearchEngineBaseUrl}$(${uploadAndGetUrl(screenshotPath)})" && ${cleanup}`]
                 break;
             case ScreenshotAction.Action.CharRecognition:
-                return ["bash", "-c", `${cropInPlace} && tesseract '${StringUtils.shellSingleQuoteEscape(screenshotPath)}' stdout -l $(tesseract --list-langs | awk 'NR>1{print $1}' | tr '\\n' '+' | sed 's/\\+$/\\n/') | wl-copy && ${cleanup}`]
+                return ["bash", "-c", `${cropInPlace} && tesseract '${StringUtils.shellSingleQuoteEscape(screenshotPath)}' stdout -l $(tesseract --list-langs | awk 'NR>1{print $1}' | tr '\\n' '+' | sed 's/\\+$/\\n/') | wl-copy && notify-send 'OCR complete' 'Text copied to clipboard' -a 'Screen Snip' -i edit-find && ${cleanup}`]
                 break;
             case ScreenshotAction.Action.Record:
                 return ["bash", "-c", `${Directories.recordScriptPath} --region '${slurpRegion}'`]

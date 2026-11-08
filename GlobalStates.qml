@@ -80,6 +80,34 @@ Singleton {
         }
     }
 
+    function triggerScreenSnip(): void {
+        root.sidebarRightOpen = false;
+        screenSnipTimer.restart();
+    }
+
+    Timer {
+        id: screenSnipTimer
+        interval: 350
+        repeat: false
+        onTriggered: {
+            root.regionSelectorOpen = true;
+        }
+    }
+
+    function triggerColorPicker(): void {
+        root.sidebarRightOpen = false;
+        colorPickerTimer.restart();
+    }
+
+    Timer {
+        id: colorPickerTimer
+        interval: 350
+        repeat: false
+        onTriggered: {
+            Quickshell.execDetached(["hyprpicker", "-a"]);
+        }
+    }
+
     Connections {
         target: Hyprland
 

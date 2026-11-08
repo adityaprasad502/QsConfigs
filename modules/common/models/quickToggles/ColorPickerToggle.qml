@@ -12,18 +12,6 @@ QuickToggleModel {
     toggled: false
     icon: "colorize"
 
-    mainAction: () => {
-        GlobalStates.sidebarRightOpen = false;
-        delayedActionTimer.start();
-    }
-    Timer {
-        id: delayedActionTimer
-        interval: 300
-        repeat: false
-        onTriggered: {
-            Quickshell.execDetached(["hyprpicker", "-a"]);
-        }
-    }
-
+    mainAction: () => GlobalStates.triggerColorPicker()
     tooltipText: Translation.tr("Color picker")
 }

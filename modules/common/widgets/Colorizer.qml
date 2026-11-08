@@ -6,7 +6,7 @@ MultiEffect {
     property color sourceColor: "black"
 
     colorization: 1
-    brightness: 1 - sourceColor.hslLightness
+    brightness: (sourceColor && sourceColor.hslLightness !== undefined) ? (1 - sourceColor.hslLightness) : 0
 
     Behavior on colorizationColor {
         animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)

@@ -17,12 +17,70 @@ WindowDialog {
     id: root
     backgroundHeight: 600
 
-    WindowDialogTitle {
-        text: Translation.tr("Bluetooth devices")
+    Timer {
+        id: discoveryTimeoutTimer
+        interval: 10000
+        repeat: false
+        running: Bluetooth.defaultAdapter?.discovering ?? false
+        onTriggered: {
+            if (Bluetooth.defaultAdapter) {
+                Bluetooth.defaultAdapter.discovering = false;
+            }
+        }
     }
+
+    Connections {
+        target: Bluetooth.defaultAdapter ?? null
+        function onDiscoveringChanged() {
+            if (Bluetooth.defaultAdapter?.discovering) {
+                discoveryTimeoutTimer.restart();
+            } else {
+                discoveryTimeoutTimer.stop();
+            }
+        }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: 10
+
+        WindowDialogTitle {
+            text: Translation.tr("Bluetooth devices")
+            Layout.fillWidth: true
+        }
+
+        RippleButton {
+            id: refreshButton
+            implicitWidth: 32
+            implicitHeight: 32
+            buttonRadius: 16
+            colBackground: "transparent"
+            colBackgroundHover: Appearance.colors.colLayer1Hover
+            colRipple: Appearance.colors.colLayer1Active
+            enabled: Bluetooth.defaultAdapter?.enabled ?? false
+            onClicked: {
+                if (Bluetooth.defaultAdapter) {
+                    Bluetooth.defaultAdapter.discovering = true;
+                }
+            }
+
+            StyledToolTip {
+                text: Translation.tr("Scan for Bluetooth devices")
+            }
+
+            MaterialSymbol {
+                anchors.centerIn: parent
+                text: "refresh"
+                iconSize: Appearance.font.pixelSize.larger
+                color: Appearance.colors.colOnSurface
+            }
+        }
+    }
+
     WindowDialogSeparator {
         visible: !(Bluetooth.defaultAdapter?.discovering ?? false)
     }
+
     StyledIndeterminateProgressBar {
         visible: Bluetooth.defaultAdapter?.discovering ?? false
         Layout.fillWidth: true
@@ -31,7 +89,35 @@ WindowDialog {
         Layout.leftMargin: -Appearance.rounding.large
         Layout.rightMargin: -Appearance.rounding.large
     }
+
+    ColumnLayout {
+        visible: BluetoothStatus.friendlyDeviceList.length === 0
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.margins: 20
+        spacing: 8
+
+        Item { Layout.fillHeight: true }
+
+        MaterialSymbol {
+            Layout.alignment: Qt.AlignHCenter
+            text: (Bluetooth.defaultAdapter?.discovering ?? false) ? "bluetooth_searching" : "bluetooth_disabled"
+            iconSize: 40
+            color: Appearance.colors.colSubtext
+        }
+
+        StyledText {
+            Layout.alignment: Qt.AlignHCenter
+            text: (Bluetooth.defaultAdapter?.discovering ?? false) ? Translation.tr("Searching for devices...") : Translation.tr("No Bluetooth devices found")
+            color: Appearance.colors.colSubtext
+            font.pixelSize: Appearance.font.pixelSize.small
+        }
+
+        Item { Layout.fillHeight: true }
+    }
+
     StyledListView {
+        visible: BluetoothStatus.friendlyDeviceList.length > 0
         Layout.fillHeight: true
         Layout.fillWidth: true
         Layout.topMargin: -15
@@ -55,7 +141,9 @@ WindowDialog {
             }
         }
     }
+
     WindowDialogSeparator {}
+
     WindowDialogButtonRow {
         DialogButton {
             buttonText: Translation.tr("Details")

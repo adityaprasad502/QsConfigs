@@ -48,13 +48,29 @@ Singleton {
                 root.currentStrength > 17 ? "network_wifi_1_bar" :
                 "signal_wifi_0_bar"
             )
-            : (root.wifiStatus === "connecting")
+            : (root.wifiStatus === "connecting" || root.wifiConnecting)
                 ? "signal_wifi_statusbar_not_connected"
                 : (root.wifiStatus === "disconnected")
                     ? "wifi_find"
                     : (root.wifiStatus === "disabled")
                         ? "signal_wifi_off"
                         : "signal_wifi_bad"
+
+    property string ipAddress: ""
+
+    function copyIpAddress(): void {
+        if (root.ipAddress) {
+            Quickshell.clipboardText = root.ipAddress;
+            Quickshell.execDetached(["notify-send", Translation.tr("Network"), Translation.tr("Copied IP address %1 to clipboard").arg(root.ipAddress), "-a", "Shell", "-i", "network-wireless"]);
+        }
+    }
+
+    function forgetNetwork(ssid: string): void {
+        if (!ssid) return;
+        Quickshell.execDetached(["nmcli", "connection", "delete", "id", ssid]);
+        Quickshell.execDetached(["notify-send", Translation.tr("Network"), Translation.tr("Removed network \"%1\"").arg(ssid), "-a", "Shell", "-i", "network-wireless"]);
+        rescanWifi();
+    }
 
     // Control
     function enableWifi(enabled = true): void {
@@ -164,6 +180,7 @@ Singleton {
         updateNetworkName.running = true;
         updateNetworkStrength.running = true;
         updateInterfaceName.running = true;
+        updateIpAddress.running = true;
         getNetworks.running = true;
     }
 
@@ -172,7 +189,10 @@ Singleton {
         interval: 10000
         running: root.wifiEnabled && root.wifiStatus === "connected"
         repeat: true
-        onTriggered: updateNetworkStrength.running = true
+        onTriggered: {
+            updateNetworkStrength.running = true;
+            updateIpAddress.running = true;
+        }
     }
 
     // `ip route show default` output: "default via <gw> dev <iface> ..."
@@ -185,6 +205,17 @@ Singleton {
                 const parts = data.trim().split(/\s+/);
                 const devIdx = parts.indexOf("dev");
                 if (devIdx !== -1) root.interfaceName = parts[devIdx + 1] ?? "";
+            }
+        }
+    }
+
+    Process {
+        id: updateIpAddress
+        running: true
+        command: ["sh", "-c", "ip -4 addr show " + (root.interfaceName || "wlan0") + " | awk '/inet /{print $2}' | cut -d/ -f1"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.ipAddress = text.trim();
             }
         }
     }

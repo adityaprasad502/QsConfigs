@@ -75,7 +75,8 @@ PanelWindow {
     property real draggingY: 0
     property real dragDiffX: 0
     property real dragDiffY: 0
-    property bool draggedAway: (dragDiffX !== 0 || dragDiffY !== 0)
+    property real dragThreshold: 8
+    property bool draggedAway: Math.hypot(dragDiffX, dragDiffY) >= dragThreshold
     property bool dragging: false
     property list<point> points: []
     property var mouseButton: null
@@ -126,7 +127,7 @@ PanelWindow {
     property real targetedRegionWidth: 0
     property real targetedRegionHeight: 0
     function targetedRegionValid() {
-        return (root.targetedRegionX >= 0 && root.targetedRegionY >= 0)
+        return (root.targetedRegionX >= 0 && root.targetedRegionY >= 0 && root.targetedRegionWidth > 0 && root.targetedRegionHeight > 0)
     }
     function setRegionToTargeted() {
         const padding = Config.options.regionSelector.targetRegions.selectionPadding; // Make borders not cut off n stuff
@@ -263,6 +264,7 @@ PanelWindow {
         if (root.regionWidth <= 0 || root.regionHeight <= 0) {
             console.warn("[Region Selector] Invalid region size, skipping snip.");
             root.dismiss();
+            return;
         }
 
         // Clamp region to screen bounds
@@ -332,15 +334,25 @@ PanelWindow {
             root.dragStartY = mouse.y;
             root.draggingX = mouse.x;
             root.draggingY = mouse.y;
+            root.dragDiffX = 0;
+            root.dragDiffY = 0;
             root.dragging = true;
             root.mouseButton = mouse.button;
+            root.updateTargetedRegion(mouse.x, mouse.y);
         }
         onReleased: (mouse) => {
+            const dragDist = Math.hypot(root.draggingX - root.dragStartX, root.draggingY - root.dragStartY);
+            const isClick = dragDist < root.dragThreshold;
+
             // Detect if it was a click -> Try to select targeted region
-            if (root.draggingX === root.dragStartX && root.draggingY === root.dragStartY) {
+            if (isClick) {
                 if (root.targetedRegionValid()) {
                     root.setRegionToTargeted();
+                    root.snip();
+                } else {
+                    root.dismiss();
                 }
+                return;
             }
             // Circle dragging?
             else if (root.selectionMode === RegionSelection.SelectionMode.Circle) {
@@ -358,7 +370,7 @@ PanelWindow {
             root.snip();
         }
         onPositionChanged: (mouse) => {
-            root.updateTargetedRegion(mouse.x, mouse.y);
+            if (!root.draggedAway) root.updateTargetedRegion(mouse.x, mouse.y);
             if (!root.dragging) return;
             root.draggingX = mouse.x;
             root.draggingY = mouse.y;

@@ -26,8 +26,8 @@ ButtonMouseArea {
     property real workspaceButtonWidth: 26
     property real activeWorkspaceMargin: 2
     property real activeWorkspaceSize: workspaceButtonWidth - activeWorkspaceMargin * 2
-    property real workspaceIconSize: workspaceButtonWidth * 0.69
-    property real workspaceIconSizeShrinked: workspaceButtonWidth * 0.55
+    property real workspaceIconSize: Math.round(workspaceButtonWidth * 0.69)
+    property real workspaceIconSizeShrinked: Math.round(workspaceButtonWidth * 0.55)
     property real workspaceIconOpacityShrinked: 1
     property real workspaceIconMarginShrinked: -4
     property int workspaceIndexInGroup: (monitor?.activeWorkspace?.id - 1) % wsModel.shownCount
@@ -221,19 +221,19 @@ ButtonMouseArea {
 
                     AppIcon {
                         id: appIcon
-                        property real cornerMargin: (!root.superPressAndHeld && Config.options?.bar.workspaces.showAppIcons && wsApp.biggestWindow) ? (root.workspaceButtonWidth - root.workspaceIconSize) / 2 : root.workspaceIconMarginShrinked
+                        property real cornerMargin: Math.round((!root.superPressAndHeld && Config.options?.bar.workspaces.showAppIcons && wsApp.biggestWindow) ? (root.workspaceButtonWidth - root.workspaceIconSize) / 2 : root.workspaceIconMarginShrinked)
                         anchors {
                             bottom: parent.bottom
                             right: parent.right
-                            bottomMargin: (parent.implicitHeight - root.workspaceButtonWidth) / 2 + cornerMargin
-                            rightMargin: (parent.implicitWidth - root.workspaceButtonWidth) / 2 + cornerMargin
+                            bottomMargin: Math.round((parent.implicitHeight - root.workspaceButtonWidth) / 2) + cornerMargin
+                            rightMargin: Math.round((parent.implicitWidth - root.workspaceButtonWidth) / 2) + cornerMargin
                         }
 
                         animated: !wsApp.biggestWindow // Prevent the "image-missing" icon
                         visible: false // Prevent dupe: the colorizer already copies the icon
 
                         source: wsApp.mainAppIconSource
-                        implicitSize: NumberUtils.roundToEven(root.workspaceIconSize)
+                        implicitSize: root.workspaceIconSize
 
                         Behavior on opacity {
                             animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
@@ -248,6 +248,7 @@ ButtonMouseArea {
                         visible: false
                         layer.enabled: true
                         diameter: appIcon.implicitSize
+                        anchors.fill: appIcon
                     }
 
                     Loader { // Somehow putting this multieffect in a loader prevents it from not showing up
@@ -257,7 +258,7 @@ ButtonMouseArea {
                             implicitWidth: appIcon.implicitWidth
                             implicitHeight: appIcon.implicitHeight
                             colorizationColor: Appearance.m3colors.darkmode ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnPrimary
-                            colorization: Config.options.bar.workspaces.monochromeIcons ? 0.8 : 0.5
+                            colorization: Config.options.bar.workspaces.monochromeIcons ? 0.8 : 0.0
                             brightness: 0
                             source: appIcon
 

@@ -12,18 +12,6 @@ QuickToggleModel {
     toggled: false
     icon: "screenshot_region"
 
-    mainAction: () => {
-        GlobalStates.sidebarRightOpen = false;
-        delayedActionTimer.start();
-    }
-    Timer {
-        id: delayedActionTimer
-        interval: 300
-        repeat: false
-        onTriggered: {
-            Quickshell.execDetached(["qs", "-p", Quickshell.shellPath(""), "ipc", "call", "region", "screenshot"]);
-        }
-    }
-
+    mainAction: () => GlobalStates.triggerScreenSnip()
     tooltipText: Translation.tr("Screen snip")
 }

@@ -73,6 +73,9 @@ Scope {
     IpcHandler {
         target: "region"
 
+        function close() {
+            root.dismiss()
+        }
         function screenshot() {
             root.screenshot()
         }
