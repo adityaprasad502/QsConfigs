@@ -1141,31 +1141,51 @@ def _normalize_p5(raw_ttml):
 
             lead_spans = []
             bg_spans = []
-            for sp in p.iter("span"):
-                if len(list(sp)) > 0:
-                    continue
-                role = sp.attrib.get("role", "")
-                if _is_translation_role(role):
-                    continue
-                if not sp.attrib.get("begin"):
-                    continue
-                if p_bg or _is_bg_role(role):
-                    bg_spans.append(sp)
-                else:
-                    lead_spans.append(sp)
+
+            def _collect_spans(elem, parent_is_bg=False):
+                for child in elem:
+                    if child.tag != "span":
+                        continue
+                    role = child.attrib.get("role", "")
+                    if _is_translation_role(role):
+                        continue
+                    child_is_bg = parent_is_bg or _is_bg_role(role)
+                    if len(child) > 0:
+                        _collect_spans(child, child_is_bg)
+                    else:
+                        if child.attrib.get("begin"):
+                            if child_is_bg:
+                                bg_spans.append(child)
+                            else:
+                                lead_spans.append(child)
+
+            _collect_spans(p, p_bg)
 
             def _span_syls(spans, fallback_end):
                 syls = []
-                for sp in spans:
+                n_spans = len(spans)
+                for idx, sp in enumerate(spans):
                     sp_st = _parse_p5_time_ms(sp.attrib.get("begin"))
                     sp_en = _parse_p5_time_ms(sp.attrib.get("end")) if sp.attrib.get("end") else fallback_end
                     if sp_en <= sp_st:
                         sp_en = sp_st + 1
+                    txt = sp.text or ""
+                    tail = sp.tail or ""
+                    # In TTML XML, if a span has no whitespace in tail or at end of text,
+                    # it connects directly to the following span as part of the same word.
+                    is_part = False
+                    if idx < n_spans - 1:
+                        next_txt = spans[idx + 1].text or ""
+                        if (not re.search(r"\s", tail)
+                                and not re.search(r"\s$", txt)
+                                and not re.search(r'[.,!?:;\"\'\)]$', txt)
+                                and not next_txt.startswith("(")):
+                            is_part = True
                     syls.append({
-                        "Text": (sp.text or "") + (sp.tail or ""),
+                        "Text": txt,
                         "StartTime": sp_st / 1000.0,
                         "EndTime": sp_en / 1000.0,
-                        "IsPartOfWord": False,
+                        "IsPartOfWord": is_part,
                     })
                 return syls
 
