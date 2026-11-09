@@ -207,10 +207,7 @@ Singleton {
         if (root.lyricsOffsetMs === clamped) return;
         root.lyricsOffsetMs = clamped;
         root._offsetDirty = true;
-        root.lastWordSyncPos = -1;
-        root._rawIdx = -1;
-        root.seekEpoch++;
-        Qt.callLater(root.tick);
+        root._forceSyncRefresh();
 
         let tName = StringUtils.cleanMusicTitle(root.currentTrackName) || root.currentTrackName || activePlayer?.trackTitle || "";
         let tArtist = root.currentArtistName || activePlayer?.trackArtist || "";
@@ -251,6 +248,328 @@ Singleton {
     Process {
         id: offsetSaveProc
         running: false
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Playback device latency compensation (session-only RAM cache per audio sink; never saved)
+    // Positive latency delays lyrics slightly to match wireless / buffered playback output.
+    // ------------------------------------------------------------------------------------------
+    readonly property var _audioSink: Audio.sink
+    readonly property string audioSinkKey: (root._audioSink && root._audioSink.ready)
+        ? (root._audioSink.name || root._audioSink.description || "default")
+        : ""
+    readonly property string audioSinkName: root._audioSink
+        ? (root._audioSink.nickname || root._audioSink.description || root._audioSink.name || "Audio Device")
+        : "Audio Device"
+    readonly property bool isBluetoothSink: {
+        let s = root._audioSink;
+        if (!s) return false;
+        let codec = s.properties ? (s.properties["api.bluez5.codec"] || "") : "";
+        if (codec !== "") return true;
+        let info = ((s.name || "") + " " + (s.description || "") + " " + (s.nickname || "")).toLowerCase();
+        return /bluez|bluetooth|a2dp/.test(info);
+    }
+    readonly property bool isHeadphoneSink: {
+        if (root.isBluetoothSink) return true;
+        let s = root._audioSink;
+        if (!s) return false;
+        let info = ((s.name || "") + " " + (s.description || "") + " " + (s.nickname || "")).toLowerCase();
+        return /headset|headphone|earbud|neckband|airpods|buds|wireless/.test(info);
+    }
+
+    property var _deviceLatencyCache: ({}) // sinkKey -> { enabled: bool, latencyMs: int, manual: bool }
+    property bool deviceLatencyEnabled: true
+    property int deviceLatencyMs: 0
+    property int reportedDeviceLatencyMs: 0
+    property bool _hasManualDeviceLatency: false
+    property bool _hasPwLatency: false
+    property int _btRetryAttempt: 0
+    readonly property int activeDeviceLatencyMs: deviceLatencyEnabled ? deviceLatencyMs : 0
+    readonly property real activeDeviceLatencySec: activeDeviceLatencyMs / 1000.0
+
+    function _applyReportedLatency(ms, probedKey, fromPipeWire) {
+        if (!probedKey || probedKey !== root.audioSinkKey) return;
+        let cleanMs = Math.max(0, Math.round(ms));
+        if (fromPipeWire && cleanMs > 0) root._hasPwLatency = true;
+        root.reportedDeviceLatencyMs = cleanMs;
+        if (!root._hasManualDeviceLatency) {
+            let changed = root.deviceLatencyMs !== cleanMs;
+            root.deviceLatencyMs = cleanMs;
+            if (probedKey in root._deviceLatencyCache) {
+                root._saveDeviceLatencyToMemory();
+            }
+            if (changed && root.deviceLatencyEnabled) {
+                root._forceSyncRefresh();
+            }
+        }
+    }
+
+    function _extractSinkLatencyMs(pwObjects, targetKey) {
+        if (!Array.isArray(pwObjects)) return 0;
+        let maxNsFromNode = (obj) => {
+            let lats = obj?.info?.params?.Latency;
+            if (!Array.isArray(lats)) return 0;
+            let bestNs = 0;
+            for (let i = 0; i < lats.length; i++) {
+                let entry = lats[i];
+                if (!entry) continue;
+                if (entry.direction && entry.direction !== "Input") continue;
+                let ns = Number(entry.minNs) || 0;
+                if (ns > bestNs) bestNs = ns;
+            }
+            return bestNs;
+        };
+
+        let targetNs = 0;
+        for (let i = 0; i < pwObjects.length; i++) {
+            let obj = pwObjects[i];
+            if (!obj || obj.type !== "PipeWire:Interface:Node") continue;
+            let props = obj.info?.props;
+            if (!props) continue;
+            if (props["node.name"] === targetKey || props["node.description"] === targetKey) {
+                let ns = maxNsFromNode(obj);
+                if (ns > targetNs) targetNs = ns;
+            }
+        }
+
+        if (targetNs === 0 && /jamesdsp|easyeffects/i.test(targetKey || "")) {
+            let fallbackNs = 0;
+            for (let i = 0; i < pwObjects.length; i++) {
+                let obj = pwObjects[i];
+                if (!obj || obj.type !== "PipeWire:Interface:Node") continue;
+                let props = obj.info?.props;
+                if (!props || props["media.class"] !== "Audio/Sink") continue;
+                let st = obj.info?.state;
+                if (st !== "running" && st !== "idle") continue;
+                let ns = maxNsFromNode(obj);
+                if (st === "running" && ns > targetNs) targetNs = ns;
+                else if (ns > fallbackNs) fallbackNs = ns;
+            }
+            if (targetNs === 0) targetNs = fallbackNs;
+        }
+
+        return targetNs > 0 ? Math.max(0, Math.round(targetNs / 1000000)) : 0;
+    }
+
+    function _bluetoothAddressForSink(pwObjects) {
+        let s = root._audioSink;
+        let addr = (s && s.properties) ? String(s.properties["api.bluez5.address"] || "") : "";
+        if (addr) return addr;
+        let m = (root.audioSinkKey || "").match(/([0-9A-Fa-f]{2}(?:[_:][0-9A-Fa-f]{2}){5})/);
+        if (m) return m[1];
+        if (Array.isArray(pwObjects) && /jamesdsp|easyeffects/i.test(root.audioSinkKey || "")) {
+            let fallbackAddr = "";
+            for (let i = 0; i < pwObjects.length; i++) {
+                let obj = pwObjects[i];
+                if (!obj || obj.type !== "PipeWire:Interface:Node") continue;
+                let props = obj.info?.props;
+                if (!props || props["media.class"] !== "Audio/Sink") continue;
+                let bAddr = String(props["api.bluez5.address"] || "");
+                if (!bAddr) continue;
+                if (obj.info?.state === "running") return bAddr;
+                if (!fallbackAddr && obj.info?.state === "idle") fallbackAddr = bAddr;
+            }
+            if (fallbackAddr) return fallbackAddr;
+        }
+        return "";
+    }
+
+    function _isProbingBluetoothOrDsp() {
+        return root.isBluetoothSink || /jamesdsp|easyeffects/i.test(root.audioSinkKey || "");
+    }
+
+    function _scheduleBtRetryIfNeeded() {
+        if (!root._isProbingBluetoothOrDsp()) return;
+        if (root._hasPwLatency || root._btRetryAttempt >= 3) return;
+        let delays = [800, 1800, 3500];
+        btLatencyRetryTimer.interval = delays[root._btRetryAttempt] || 3500;
+        root._btRetryAttempt++;
+        btLatencyRetryTimer.restart();
+    }
+
+    function _probeSinkLatency() {
+        let key = root.audioSinkKey;
+        if (!key) {
+            btLatencyRetryTimer.stop();
+            root._hasPwLatency = false;
+            root.reportedDeviceLatencyMs = 0;
+            return;
+        }
+        probeSinkLatencyProc.targetSinkKey = key;
+        if (probeSinkLatencyProc.running) probeSinkLatencyProc.running = false;
+        probeSinkLatencyProc.running = true;
+    }
+
+    Timer {
+        id: btLatencyRetryTimer
+        repeat: false
+        onTriggered: {
+            if (root.audioSinkKey && root._isProbingBluetoothOrDsp()) {
+                root._probeSinkLatency();
+            }
+        }
+    }
+
+    Process {
+        id: probeSinkLatencyProc
+        property string targetSinkKey: ""
+        command: ["pw-dump"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let probedKey = probeSinkLatencyProc.targetSinkKey;
+                if (!probedKey || probedKey !== root.audioSinkKey) return;
+                let parsed = null;
+                let ms = 0;
+                try {
+                    parsed = JSON.parse(text);
+                    ms = root._extractSinkLatencyMs(parsed, probedKey);
+                } catch (e) {
+                    ms = 0;
+                }
+                if (ms > 0) {
+                    btLatencyRetryTimer.stop();
+                    root._applyReportedLatency(ms, probedKey, true);
+                    return;
+                }
+                let btAddr = root._bluetoothAddressForSink(parsed);
+                if (root.isBluetoothSink || btAddr !== "") {
+                    probeBtDbusProc.targetSinkKey = probedKey;
+                    probeBtDbusProc.command = [
+                        "bash", "-c",
+                        "pat='fd[0-9]+$'; " +
+                        "if [ -n \"$1\" ]; then suff=\"${1//:/_}\"; pat=\"dev_${suff}(/.*)?/fd[0-9]+$\"; fi; " +
+                        "for p in $(busctl tree --list org.bluez 2>/dev/null | grep -E \"$pat\"); do " +
+                        "  v=$(busctl get-property org.bluez \"$p\" org.bluez.MediaTransport1 Delay 2>/dev/null | awk '{print $2}'); " +
+                        "  if [ -n \"$v\" ] && [ \"$v\" -gt 0 ] 2>/dev/null; then echo $(( (v + 5) / 10 )); exit 0; fi; " +
+                        "done; echo 0",
+                        "--", btAddr
+                    ];
+                    if (probeBtDbusProc.running) probeBtDbusProc.running = false;
+                    probeBtDbusProc.running = true;
+                } else {
+                    if (!root._hasPwLatency) {
+                        root._applyReportedLatency(0, probedKey, false);
+                    }
+                    root._scheduleBtRetryIfNeeded();
+                }
+            }
+        }
+    }
+
+    Process {
+        id: probeBtDbusProc
+        property string targetSinkKey: ""
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let probedKey = probeBtDbusProc.targetSinkKey;
+                if (!probedKey || probedKey !== root.audioSinkKey) return;
+                let ms = parseInt((text || "").trim()) || 0;
+                if (ms > root.reportedDeviceLatencyMs) {
+                    root._applyReportedLatency(ms, probedKey, false);
+                } else if (root.reportedDeviceLatencyMs === 0) {
+                    root._applyReportedLatency(0, probedKey, false);
+                }
+                root._scheduleBtRetryIfNeeded();
+            }
+        }
+    }
+
+    on_PlayingChanged: {
+        if (root._playing && root._isProbingBluetoothOrDsp() && !root._hasPwLatency) {
+            root._btRetryAttempt = 0;
+            btLatencyRetryTimer.interval = 600;
+            btLatencyRetryTimer.restart();
+        }
+    }
+
+    function _saveDeviceLatencyToMemory() {
+        let key = root.audioSinkKey || "default";
+        let cache = Object.assign({}, root._deviceLatencyCache);
+        cache[key] = {
+            enabled: root.deviceLatencyEnabled,
+            latencyMs: root.deviceLatencyMs,
+            manual: root._hasManualDeviceLatency
+        };
+        root._deviceLatencyCache = cache;
+    }
+
+    function _loadDeviceLatencyFromMemory() {
+        let key = root.audioSinkKey || "default";
+        let entry = root._deviceLatencyCache[key];
+        btLatencyRetryTimer.stop();
+        root._btRetryAttempt = 0;
+        root._hasPwLatency = false;
+        root.reportedDeviceLatencyMs = 0;
+        if (entry) {
+            root.deviceLatencyEnabled = Boolean(entry.enabled);
+            root._hasManualDeviceLatency = Boolean(entry.manual);
+            root.deviceLatencyMs = Math.max(0, parseInt(entry.latencyMs) || 0);
+        } else {
+            root.deviceLatencyEnabled = true;
+            root._hasManualDeviceLatency = false;
+            root.deviceLatencyMs = 0;
+        }
+        root._probeSinkLatency();
+        root._forceSyncRefresh();
+    }
+
+    function _forceSyncRefresh() {
+        root.lastWordSyncPos = -1;
+        root._rawIdx = -1;
+        root.seekEpoch++;
+        Qt.callLater(root.tick);
+    }
+
+    function toggleDeviceLatency() {
+        let nextEnabled = !root.deviceLatencyEnabled;
+        root.deviceLatencyEnabled = nextEnabled;
+        root._saveDeviceLatencyToMemory();
+        if (nextEnabled && !root._hasManualDeviceLatency && !root._hasPwLatency) {
+            root._probeSinkLatency();
+        }
+        root._forceSyncRefresh();
+    }
+
+    function adjustDeviceLatency(deltaMs) {
+        if (!root.deviceLatencyEnabled && root.deviceLatencyMs <= 0 && deltaMs <= 0) {
+            return;
+        }
+        root._hasManualDeviceLatency = true;
+        root.setDeviceLatency(root.deviceLatencyMs + deltaMs, true);
+    }
+
+    function setDeviceLatency(ms, enable) {
+        let clamped = Math.max(0, Math.min(2000, Math.round(ms)));
+        let nextEnabled = enable !== undefined ? Boolean(enable) : root.deviceLatencyEnabled;
+        if (root.deviceLatencyMs === clamped && root.deviceLatencyEnabled === nextEnabled) return;
+        root._hasManualDeviceLatency = true;
+        root.deviceLatencyMs = clamped;
+        root.deviceLatencyEnabled = nextEnabled;
+        root._saveDeviceLatencyToMemory();
+        root._forceSyncRefresh();
+    }
+
+    function resetDeviceLatency() {
+        let key = root.audioSinkKey || "default";
+        if (key in root._deviceLatencyCache) {
+            let cache = Object.assign({}, root._deviceLatencyCache);
+            delete cache[key];
+            root._deviceLatencyCache = cache;
+        }
+        btLatencyRetryTimer.stop();
+        root._btRetryAttempt = 0;
+        root._hasManualDeviceLatency = false;
+        root._hasPwLatency = false;
+        root.deviceLatencyEnabled = true;
+        root.deviceLatencyMs = root.reportedDeviceLatencyMs;
+        root._probeSinkLatency();
+        root._forceSyncRefresh();
+    }
+
+    onAudioSinkKeyChanged: {
+        if (root.audioSinkKey) {
+            root._loadDeviceLatencyFromMemory();
+        }
     }
 
     // ------------------------------------------------------------------------------------------
@@ -887,7 +1206,7 @@ Singleton {
 
         let now = Date.now();
         let elapsedSec = root.lastKnownTimestamp > 0 ? (now - root.lastKnownTimestamp) / 1000.0 : 0;
-        let currentPos = root.lastKnownPosition + elapsedSec + root.lyricsOffsetSec;
+        let currentPos = root.lastKnownPosition + elapsedSec + root.lyricsOffsetSec - root.activeDeviceLatencySec;
         let hasWS = root.hasWordSync;
 
         // For word-by-word karaoke, words and lines synchronize precisely with audio playback (0s lead).
@@ -994,8 +1313,32 @@ Singleton {
         }
     }
 
+    IpcHandler {
+        target: "lyrics"
+
+        function toggleDeviceLatency(): void { root.toggleDeviceLatency(); }
+        function setDeviceLatency(ms: int): void { root.setDeviceLatency(ms, true); }
+        function resetDeviceLatency(): void { root.resetDeviceLatency(); }
+        function status(): string {
+            return JSON.stringify({
+                deviceLatencyEnabled: root.deviceLatencyEnabled,
+                deviceLatencyMs: root.deviceLatencyMs,
+                reportedDeviceLatencyMs: root.reportedDeviceLatencyMs,
+                activeDeviceLatencyMs: root.activeDeviceLatencyMs,
+                audioSinkKey: root.audioSinkKey,
+                audioSinkName: root.audioSinkName,
+                isBluetoothSink: root.isBluetoothSink,
+                lyricsOffsetMs: root.lyricsOffsetMs,
+                memoryCache: root._deviceLatencyCache
+            });
+        }
+    }
+
     Component.onCompleted: {
         root.bulletPixelWidth = root.measurePixelWidth(" • ");
+        if (root.audioSinkKey) {
+            root._loadDeviceLatencyFromMemory();
+        }
         root.syncTrackChange();
     }
 }

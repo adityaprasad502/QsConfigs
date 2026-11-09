@@ -852,7 +852,10 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
             best_word = (old_name, restored, old_score)
             emit({"k": "word", "text": restored, "offset_ms": cached_offset, "src": old_name})
             if path:
-                cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": restored, "src": old_name, "offset_ms": cached_offset})
+                payload = {"ts": time.time(), "title": title, "artist": artist, "word": restored, "src": old_name}
+                if cached_offset:
+                    payload["offset_ms"] = cached_offset
+                cache_save(path, payload)
 
     def _log_complete():
         elapsed = time.monotonic() - start
@@ -889,7 +892,10 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
                     if best_word:
                         _try_restore_and_save(lrc, "lrc")
                         if path and not ("*" in best_word[1]):
-                            cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": best_word[1], "src": best_word[0], "offset_ms": cached_offset})
+                            payload = {"ts": time.time(), "title": title, "artist": artist, "word": best_word[1], "src": best_word[0]}
+                            if cached_offset:
+                                payload["offset_ms"] = cached_offset
+                            cache_save(path, payload)
                         if words_pending == 0:
                             _log_complete()
                             return
@@ -898,7 +904,10 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
                         if words_pending > 0:
                             _log("[EMIT] Using lrc line-synced lyrics (awaiting karaoke...)")
                             if path:
-                                cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": 0, "offset_ms": cached_offset})
+                                payload = {"ts": time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": 0}
+                                if cached_offset:
+                                    payload["offset_ms"] = cached_offset
+                                cache_save(path, payload)
             else:
                 _try_restore_and_save(None, "fallback")
                 if words_pending == 0 and best_word is not None:
@@ -932,7 +941,10 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
                 best_word = (name, text, score)
                 emit({"k": "word", "text": text, "offset_ms": cached_offset, "src": name})
                 if path:
-                    cache_save(path, {"ts": time.time(), "title": title, "artist": artist, "word": text, "src": name, "offset_ms": cached_offset})
+                    payload = {"ts": time.time(), "title": title, "artist": artist, "word": text, "src": name}
+                    if cached_offset:
+                        payload["offset_ms"] = cached_offset
+                    cache_save(path, payload)
             if words_pending == 0 and best_word is not None:
                 if lrc_pending:
                     continue  # Wait for line-synced lyrics to un-censor asterisks
@@ -956,7 +968,10 @@ def run(title, artist, duration, cache_dir, emit, album="", spotify_id=""):
         return
     if path:
         if lrc:
-            cache_save(path, {"ts": entry.get("ts") or time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": time.time(), "offset_ms": cached_offset})
+            payload = {"ts": entry.get("ts") or time.time(), "title": title, "artist": artist, "lrc": lrc, "word_tried": time.time()}
+            if cached_offset:
+                payload["offset_ms"] = cached_offset
+            cache_save(path, payload)
             sz_str = f" ({_file_sz(path)})" if _file_sz(path) else ""
             _log(f"[FALLBACK] Done in {elapsed:.2f}s: no karaoke found, keeping lrc line-synced lyrics{sz_str}")
         elif lrc_definitive:
@@ -990,9 +1005,14 @@ def main(argv):
                 key = f"{title}___{artist}".lower()
                 path = _cache_path(cache_dir, key)
                 entry = cache_load(path)
+                if not entry and offset_ms == 0:
+                    return 0
                 if not entry:
                     entry = {"ts": time.time(), "title": title, "artist": artist}
-                entry["offset_ms"] = offset_ms
+                if offset_ms != 0:
+                    entry["offset_ms"] = offset_ms
+                else:
+                    entry.pop("offset_ms", None)
                 cache_save(path, entry)
         return 0
 
