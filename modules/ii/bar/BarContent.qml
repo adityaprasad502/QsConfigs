@@ -52,6 +52,11 @@ Item { // Bar content region
         onScrollDown: Audio.decrementVolume()
         onScrollUp: Audio.incrementVolume()
         onMovedAway: GlobalStates.osdVolumeOpen = false
+        onPressed: event => {
+            if (event.button === Qt.LeftButton) {
+                GlobalStates.sidebarLeftOpen = !GlobalStates.sidebarLeftOpen;
+            }
+        }
 
         ScrollHint {
             reveal: barLeftSideMouseArea.hovered
@@ -62,10 +67,33 @@ Item { // Bar content region
             anchors.verticalCenter: parent.verticalCenter
         }
 
-        Media {
-            anchors.fill: parent
-            anchors.leftMargin: Appearance.rounding.screenRounding
-            anchors.rightMargin: 0
+        RowLayout {
+            id: leftSectionRowLayout
+            anchors {
+                fill: parent
+                leftMargin: Appearance.rounding.screenRounding
+                rightMargin: 0
+            }
+            spacing: 6
+
+            Loader {
+                id: leftSidebarButtonLoader
+                active: Config.options.bar.showLeftSidebarButton
+                    && (Config.options.policies.ai !== 0 || Config.options.sidebar.translator.enable || Config.options.policies.weeb !== 0)
+                visible: active
+                Layout.alignment: Qt.AlignVCenter
+                sourceComponent: LeftSidebarButton {
+                    implicitHeight: Appearance.sizes.baseBarHeight - 8
+                    implicitWidth: implicitHeight
+                    buttonRadius: Appearance.rounding.small
+                    colBackground: Config.options?.bar.borderless ? "transparent" : Appearance.colors.colLayer1
+                }
+            }
+
+            Media {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+            }
         }
     }
 

@@ -19,6 +19,22 @@ ContentPage {
             }
         }
     }
+
+    ContentSection {
+        icon: "side_navigation"
+        title: Translation.tr("Sidebars")
+        ConfigSwitch {
+            buttonIcon: "right_panel_open"
+            text: Translation.tr("Show left sidebar button")
+            checked: Config.options.bar.showLeftSidebarButton
+            onCheckedChanged: {
+                Config.options.bar.showLeftSidebarButton = checked;
+            }
+            StyledToolTip {
+                text: Translation.tr("Shows a dedicated button on the horizontal bar to toggle the left sidebar")
+            }
+        }
+    }
     
     ContentSection {
         icon: "spoke"

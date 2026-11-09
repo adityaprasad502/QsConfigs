@@ -640,7 +640,7 @@ ContentPage {
                     }
 
                     StyledToolTip {
-                        text: Translation.tr("Place the corners to trigger at the bottom")
+                        text: Translation.tr("Place the corners to trigger at the bottom (may block app buttons near bottom corners)")
                     }
                 }
                 ConfigSwitch {
