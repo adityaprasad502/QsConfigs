@@ -22,6 +22,7 @@ Button {
     property var releaseAction // When left clicking (release)
     property var altAction // When right clicking
     property var middleClickAction // When middle clicking
+    property var wheelAction // When scrolling mouse wheel / touchpad
 
     property color colBackground: ColorUtils.transparentize(Appearance?.colors.colLayer1Hover, 1) || "transparent"
     property color colBackgroundHover: Appearance?.colors.colLayer1Hover ?? "#E5DFED"
@@ -88,6 +89,13 @@ Button {
             root.down = false
             if (!root.rippleEnabled) return;
             rippleFadeAnim.restart();
+        }
+        onWheel: (event) => {
+            if (root.wheelAction) {
+                root.wheelAction(event);
+                return;
+            }
+            event.accepted = false;
         }
     }
 

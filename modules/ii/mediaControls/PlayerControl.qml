@@ -118,23 +118,26 @@ Item { // Player instance
         implicitWidth: 26
         implicitHeight: 26
         buttonRadius: 13
+        padding: 0
 
         property var iconName
         colBackground: "transparent"
         colBackgroundHover: ColorUtils.applyAlpha(blendedColors.colPrimary, 0.18)
         colRipple: ColorUtils.applyAlpha(blendedColors.colPrimary, 0.30)
 
-        contentItem: MaterialSymbol {
-            anchors.centerIn: parent
-            iconSize: 20
-            fill: 1
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            color: trackChangeBtn.hovered ? blendedColors.colPrimary : blendedColors.colSubtext
-            text: trackChangeBtn.iconName
+        contentItem: Item {
+            MaterialSymbol {
+                anchors.centerIn: parent
+                iconSize: 20
+                fill: 1
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                color: trackChangeBtn.hovered ? blendedColors.colPrimary : blendedColors.colSubtext
+                text: trackChangeBtn.iconName
 
-            Behavior on color {
-                animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                Behavior on color {
+                    animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                }
             }
         }
     }
@@ -190,6 +193,28 @@ Item { // Player instance
         rescaleSize: 16
     }
 
+    TextMetrics {
+        id: lyricMeasure
+        font.family: Appearance?.font?.family?.main ?? ""
+        font.pixelSize: Appearance?.font?.pixelSize?.small ?? 15
+        font.variableAxes: Appearance?.font?.variableAxes?.main ?? ({})
+    }
+
+    readonly property real artAverageLightness: {
+        if (!colorQuantizer || !colorQuantizer.colors || colorQuantizer.colors.length === 0) return 0.35;
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i < colorQuantizer.colors.length; i++) {
+            let c = colorQuantizer.colors[i];
+            if (c) {
+                sum += c.hslLightness;
+                count++;
+            }
+        }
+        return count > 0 ? (sum / count) : 0.35;
+    }
+    readonly property real _scrimBoost: Math.max(0, (root.artAverageLightness - 0.42) * 0.45)
+
     property QtObject blendedColors: AdaptedMaterialScheme {
         color: artDominantColor
     }
@@ -227,35 +252,35 @@ Item { // Player instance
                 antialiasing: true
                 asynchronous: true
                 visible: root.displayedArtFilePath !== ""
-                opacity: 0.65
+                opacity: Math.max(0.54, 0.72 - root._scrimBoost * 0.7)
 
                 layer.enabled: true
                 layer.effect: MultiEffect {
                     source: blurredArt
-                    saturation: 1.35
-                    brightness: 0.04
+                    saturation: 1.32
+                    brightness: 0.01
                     blurEnabled: true
-                    blurMax: 70
-                    blur: 0.90
+                    blurMax: 60
+                    blur: 0.78
                 }
             }
 
-            // Smooth contrast gradient: luminous ambient tint on left, gentle scrim on right for crisp text contrast
+            // Gentle contrast scrim preserving album-art glow while keeping typography crisp
             Rectangle {
                 anchors.fill: parent
                 gradient: Gradient {
                     orientation: Gradient.Horizontal
                     GradientStop {
                         position: 0.0
-                        color: ColorUtils.applyAlpha(blendedColors.colLayer0, 0.18)
+                        color: ColorUtils.applyAlpha(blendedColors.colLayer0, Math.min(0.36, 0.16 + root._scrimBoost * 0.65))
                     }
                     GradientStop {
-                        position: 0.40
-                        color: ColorUtils.applyAlpha(blendedColors.colLayer0, 0.42)
+                        position: 0.45
+                        color: ColorUtils.applyAlpha(blendedColors.colLayer0, Math.min(0.52, 0.34 + root._scrimBoost * 0.65))
                     }
                     GradientStop {
                         position: 1.0
-                        color: ColorUtils.applyAlpha(blendedColors.colLayer0, 0.62)
+                        color: ColorUtils.applyAlpha(blendedColors.colLayer0, Math.min(0.66, 0.52 + root._scrimBoost * 0.40))
                     }
                 }
             }
@@ -268,7 +293,7 @@ Item { // Player instance
                 anchors.bottom: parent.bottom
                 height: parent.height * 0.55
                 live: root.player?.isPlaying
-                opacity: 0.32
+                opacity: 0.26
                 points: root.visualizerPoints
                 maxVisualizerValue: root.maxVisualizerValue
                 smoothing: root.visualizerSmoothing
@@ -289,7 +314,7 @@ Item { // Player instance
             id: mainRow
             anchors.fill: parent
             anchors.margins: 13
-            spacing: 16
+            spacing: 14
 
             Rectangle { // Dedicated album art thumbnail
                 id: artBackground
@@ -341,267 +366,356 @@ Item { // Player instance
                 }
             }
 
-            ColumnLayout { // Info & controls
+            ColumnLayout { // Info & controls right of album art
                 id: infoColumn
                 Layout.fillHeight: true
                 Layout.fillWidth: true
                 spacing: 2
 
                 RowLayout {
+                    id: titleRow
                     Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignTop
-                    spacing: 12
+                    spacing: 8
 
-                    // Track title & artist
-                    ColumnLayout {
+                    Item {
+                        id: titleMarqueeContainer
                         Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignTop
-                        spacing: 2
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitHeight: trackTitleText.implicitHeight
+                        clip: true
 
-                        Item {
-                            id: titleMarqueeContainer
-                            Layout.fillWidth: true
-                            implicitHeight: trackTitleText.implicitHeight
-                            clip: true
+                        readonly property bool isOverflowing: width > 0 && trackTitleText.implicitWidth > width + 5
+                        readonly property string rawTitle: root.player?.trackTitle || "Untitled"
 
-                            readonly property bool isOverflowing: width > 0 && trackTitleText.implicitWidth > width + 5
-                            readonly property string rawTitle: root.player?.trackTitle || "Untitled"
-
-                            onRawTitleChanged: {
+                        onRawTitleChanged: {
+                            marqueeAnim.stop();
+                            marqueeRow.x = 0;
+                            if (isOverflowing)
+                                marqueeAnim.start();
+                        }
+                        onIsOverflowingChanged: {
+                            if (!isOverflowing) {
                                 marqueeAnim.stop();
                                 marqueeRow.x = 0;
-                                if (isOverflowing)
-                                    marqueeAnim.start();
-                            }
-                            onIsOverflowingChanged: {
-                                if (!isOverflowing) {
-                                    marqueeAnim.stop();
-                                    marqueeRow.x = 0;
-                                } else {
-                                    marqueeAnim.restart();
-                                }
-                            }
-
-                            Row {
-                                id: marqueeRow
-                                spacing: 40
-                                x: 0
-
-                                StyledText {
-                                    id: trackTitleText
-                                    font.pixelSize: Appearance.font.pixelSize.large
-                                    color: blendedColors.colOnLayer0
-                                    textFormat: Text.PlainText
-                                    text: titleMarqueeContainer.rawTitle
-                                }
-
-                                StyledText {
-                                    visible: titleMarqueeContainer.isOverflowing && marqueeAnim.running
-                                    font.pixelSize: Appearance.font.pixelSize.large
-                                    color: blendedColors.colOnLayer0
-                                    textFormat: Text.PlainText
-                                    text: titleMarqueeContainer.rawTitle
-                                }
-
-                                SequentialAnimation on x {
-                                    id: marqueeAnim
-                                    running: titleMarqueeContainer.isOverflowing && root.visible
-                                    loops: Animation.Infinite
-                                    PauseAnimation { duration: 1800 }
-                                    NumberAnimation {
-                                        from: 0
-                                        to: -(trackTitleText.implicitWidth + marqueeRow.spacing)
-                                        duration: Math.max(3000, trackTitleText.implicitWidth * 28)
-                                    }
-                                }
+                            } else {
+                                marqueeAnim.restart();
                             }
                         }
 
-                        Item {
-                            id: artistMarqueeContainer
-                            Layout.fillWidth: true
-                            implicitHeight: trackArtistText.implicitHeight
-                            clip: true
+                        Row {
+                            id: marqueeRow
+                            spacing: 40
+                            x: 0
 
-                            readonly property bool isOverflowing: width > 0 && trackArtistText.implicitWidth > width + 5
-                            readonly property string rawSubtitle: {
-                                let artist = MprisController.getPlayerArtists(root.player);
-                                let album = root.player?.trackAlbum || "";
-                                let title = root.player?.trackTitle || "";
-                                if (artist && album && album !== title && !title.includes(album) && artist !== album && !artist.includes(album)) {
-                                    return `${artist} • ${album}`;
-                                }
-                                return artist || album;
+                            StyledText {
+                                id: trackTitleText
+                                font.pixelSize: Appearance.font.pixelSize.large
+                                color: blendedColors.colOnLayer0
+                                textFormat: Text.PlainText
+                                text: titleMarqueeContainer.rawTitle
                             }
 
-                            onRawSubtitleChanged: {
-                                artistMarqueeAnim.stop();
-                                artistMarqueeRow.x = 0;
-                                if (isOverflowing)
-                                    artistMarqueeAnim.start();
-                            }
-                            onIsOverflowingChanged: {
-                                if (!isOverflowing) {
-                                    artistMarqueeAnim.stop();
-                                    artistMarqueeRow.x = 0;
-                                } else {
-                                    artistMarqueeAnim.restart();
-                                }
+                            StyledText {
+                                visible: titleMarqueeContainer.isOverflowing && marqueeAnim.running
+                                font.pixelSize: Appearance.font.pixelSize.large
+                                color: blendedColors.colOnLayer0
+                                textFormat: Text.PlainText
+                                text: titleMarqueeContainer.rawTitle
                             }
 
-                            Row {
-                                id: artistMarqueeRow
-                                spacing: 40
-                                x: 0
-
-                                StyledText {
-                                    id: trackArtistText
-                                    font.pixelSize: Appearance.font.pixelSize.smaller
-                                    color: blendedColors.colSubtext
-                                    textFormat: Text.PlainText
-                                    text: artistMarqueeContainer.rawSubtitle
-                                }
-
-                                StyledText {
-                                    visible: artistMarqueeContainer.isOverflowing && artistMarqueeAnim.running
-                                    font.pixelSize: Appearance.font.pixelSize.smaller
-                                    color: blendedColors.colSubtext
-                                    textFormat: Text.PlainText
-                                    text: artistMarqueeContainer.rawSubtitle
-                                }
-
-                                SequentialAnimation on x {
-                                    id: artistMarqueeAnim
-                                    running: artistMarqueeContainer.isOverflowing && root.visible
-                                    loops: Animation.Infinite
-                                    PauseAnimation { duration: 2200 }
-                                    NumberAnimation {
-                                        from: 0
-                                        to: -(trackArtistText.implicitWidth + artistMarqueeRow.spacing)
-                                        duration: Math.max(3000, trackArtistText.implicitWidth * 28)
-                                    }
+                            SequentialAnimation on x {
+                                id: marqueeAnim
+                                running: titleMarqueeContainer.isOverflowing && root.visible
+                                loops: Animation.Infinite
+                                PauseAnimation { duration: 1800 }
+                                NumberAnimation {
+                                    from: 0
+                                    to: -(trackTitleText.implicitWidth + marqueeRow.spacing)
+                                    duration: Math.max(3000, trackTitleText.implicitWidth * 28)
                                 }
                             }
                         }
                     }
 
-                    // Lyrics sync offset stepper, aligned with the title block
-                    Rectangle {
-                        id: offsetPill
-                        Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                    // Right-side sync controls: session device latency toggle + per-song offset stepper
+                    RowLayout {
+                        id: syncControlsRow
+                        Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                        spacing: 6
                         visible: LyricsService.isSupportedPlayer(root.player) && root.player === LyricsService.activePlayer && LyricsService.lyricLines.length > 0
-                        implicitWidth: offsetRow.implicitWidth + 10
-                        implicitHeight: 26
-                        radius: height / 2
-                        color: LyricsService.lyricsOffsetMs !== 0
-                            ? ColorUtils.applyAlpha(blendedColors.colPrimary, 0.16)
-                            : ColorUtils.applyAlpha(blendedColors.colLayer1, 0.45)
 
-                        RowLayout {
-                            id: offsetRow
-                            anchors.centerIn: parent
-                            spacing: 2
+                        property real _latencyWheelAccum: 0
+                        property real _offsetWheelAccum: 0
 
-                            RippleButton {
-                                id: offsetMinusBtn
-                                implicitWidth: 20
-                                implicitHeight: 20
-                                buttonRadius: 10
-                                colBackground: "transparent"
-                                colBackgroundHover: ColorUtils.applyAlpha(blendedColors.colPrimary, 0.22)
-                                colRipple: ColorUtils.applyAlpha(blendedColors.colPrimary, 0.35)
-                                downAction: () => LyricsService.adjustLyricsOffset(-50)
-                                contentItem: MaterialSymbol {
+                        function _consumeWheel(event, isLatency) {
+                            let dy = event.angleDelta.y !== 0 ? event.angleDelta.y : event.pixelDelta.y;
+                            if (!dy) return;
+                            let accum = isLatency ? _latencyWheelAccum : _offsetWheelAccum;
+                            if ((dy > 0 && accum < 0) || (dy < 0 && accum > 0)) accum = 0;
+                            let stepDelta = 0;
+                            if (Math.abs(dy) >= 60) {
+                                accum = 0;
+                                stepDelta = dy > 0 ? 5 : -5;
+                            } else {
+                                accum += dy;
+                                if (Math.abs(accum) >= 60) {
+                                    stepDelta = accum > 0 ? 5 : -5;
+                                    accum = 0;
+                                }
+                            }
+                            if (isLatency) _latencyWheelAccum = accum;
+                            else _offsetWheelAccum = accum;
+                            if (stepDelta !== 0) {
+                                if (isLatency) LyricsService.adjustDeviceLatency(stepDelta);
+                                else LyricsService.adjustLyricsOffset(stepDelta);
+                            }
+                        }
+
+                        RippleButton {
+                            id: deviceLatencyBtn
+                            readonly property bool showMs: LyricsService.deviceLatencyEnabled || LyricsService.deviceLatencyMs !== 0
+                            Layout.alignment: Qt.AlignVCenter
+                            toggled: LyricsService.deviceLatencyEnabled
+                            implicitHeight: 26
+                            implicitWidth: showMs ? (latencyBtnRow.implicitWidth + 16) : 26
+                            buttonRadius: 13
+                            padding: 0
+                            colBackground: ColorUtils.applyAlpha(blendedColors.colLayer1, 0.64)
+                            colBackgroundHover: ColorUtils.applyAlpha(ColorUtils.mix(blendedColors.colLayer1, blendedColors.colOnLayer0, 0.86), 0.86)
+                            colBackgroundToggled: blendedColors.colPrimary
+                            colBackgroundToggledHover: ColorUtils.mix(blendedColors.colPrimary, blendedColors.colOnLayer0, 0.88)
+                            colRipple: ColorUtils.applyAlpha(blendedColors.colPrimary, 0.30)
+                            colRippleToggled: ColorUtils.applyAlpha(blendedColors.colOnPrimary, 0.25)
+                            downAction: () => LyricsService.toggleDeviceLatency()
+                            altAction: () => LyricsService.resetDeviceLatency()
+                            middleClickAction: () => LyricsService.resetDeviceLatency()
+                            wheelAction: (event) => syncControlsRow._consumeWheel(event, true)
+
+                            Behavior on implicitWidth {
+                                NumberAnimation {
+                                    duration: 180
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+
+                            contentItem: Item {
+                                clip: true
+
+                                RowLayout {
+                                    id: latencyBtnRow
                                     anchors.centerIn: parent
-                                    text: "remove"
-                                    iconSize: 15
-                                    fill: 1
-                                    color: offsetMinusBtn.hovered
-                                        ? blendedColors.colPrimary
-                                        : (LyricsService.lyricsOffsetMs !== 0 ? blendedColors.colPrimary : blendedColors.colOnLayer0)
+                                    spacing: 4
 
-                                    Behavior on color {
-                                        animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                                    MaterialSymbol {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        text: LyricsService.isHeadphoneSink ? "headphones" : "speaker"
+                                        iconSize: 15
+                                        fill: deviceLatencyBtn.toggled ? 1 : 0
+                                        color: deviceLatencyBtn.toggled
+                                            ? blendedColors.colOnPrimary
+                                            : (deviceLatencyBtn.hovered ? blendedColors.colOnLayer0 : ColorUtils.applyAlpha(blendedColors.colOnLayer0, 0.82))
+
+                                        Behavior on color {
+                                            animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                                        }
+                                    }
+
+                                    StyledText {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        visible: deviceLatencyBtn.showMs
+                                        font.pixelSize: Appearance.font.pixelSize.smaller
+                                        font.family: Appearance.font.family.numbers
+                                        font.weight: deviceLatencyBtn.toggled ? Font.DemiBold : Font.Medium
+                                        color: deviceLatencyBtn.toggled
+                                            ? blendedColors.colOnPrimary
+                                            : (deviceLatencyBtn.hovered ? blendedColors.colOnLayer0 : ColorUtils.applyAlpha(blendedColors.colOnLayer0, 0.80))
+                                        text: LyricsService.deviceLatencyMs + "ms"
+
+                                        Behavior on color {
+                                            animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                                        }
                                     }
                                 }
                             }
 
-                            StyledText {
-                                id: offsetLabel
-                                Layout.preferredWidth: 44
+                            StyledToolTip {
+                                text: LyricsService.deviceLatencyEnabled
+                                    ? `${LyricsService.audioSinkName} • ${LyricsService.deviceLatencyMs}ms active (session)\nScroll: ±5ms • Click: Disable • Right-click: Reset`
+                                    : `${LyricsService.audioSinkName} • Latency off${LyricsService.deviceLatencyMs > 0 ? ` (${LyricsService.deviceLatencyMs}ms detected)` : ""}\nClick: Enable • Scroll: ±5ms`
+                            }
+                        }
+
+                        // Per-song lyrics sync offset (scroll ±5ms, click to reset)
+                        RippleButton {
+                            id: lyricsOffsetBtn
+                            Layout.alignment: Qt.AlignVCenter
+                            toggled: LyricsService.lyricsOffsetMs !== 0
+                            implicitHeight: 26
+                            implicitWidth: LyricsService.lyricsOffsetMs !== 0 ? (offsetBtnRow.implicitWidth + 16) : 26
+                            buttonRadius: 13
+                            padding: 0
+                            colBackground: ColorUtils.applyAlpha(blendedColors.colLayer1, 0.64)
+                            colBackgroundHover: ColorUtils.applyAlpha(ColorUtils.mix(blendedColors.colLayer1, blendedColors.colOnLayer0, 0.86), 0.86)
+                            colBackgroundToggled: blendedColors.colPrimary
+                            colBackgroundToggledHover: ColorUtils.mix(blendedColors.colPrimary, blendedColors.colOnLayer0, 0.88)
+                            colRipple: ColorUtils.applyAlpha(blendedColors.colPrimary, 0.30)
+                            colRippleToggled: ColorUtils.applyAlpha(blendedColors.colOnPrimary, 0.25)
+                            downAction: () => LyricsService.resetLyricsOffset()
+                            altAction: () => LyricsService.resetLyricsOffset()
+                            middleClickAction: () => LyricsService.resetLyricsOffset()
+                            wheelAction: (event) => syncControlsRow._consumeWheel(event, false)
+
+                            Behavior on implicitWidth {
+                                NumberAnimation {
+                                    duration: 180
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+
+                            contentItem: Item {
+                                clip: true
+
+                                RowLayout {
+                                    id: offsetBtnRow
+                                    anchors.centerIn: parent
+                                    spacing: 4
+
+                                    MaterialSymbol {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        text: "lyrics"
+                                        iconSize: 15
+                                        fill: lyricsOffsetBtn.toggled ? 1 : 0
+                                        color: lyricsOffsetBtn.toggled
+                                            ? blendedColors.colOnPrimary
+                                            : (lyricsOffsetBtn.hovered ? blendedColors.colOnLayer0 : ColorUtils.applyAlpha(blendedColors.colOnLayer0, 0.82))
+
+                                        Behavior on color {
+                                            animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                                        }
+                                    }
+
+                                    StyledText {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        visible: LyricsService.lyricsOffsetMs !== 0
+                                        font.pixelSize: Appearance.font.pixelSize.smaller
+                                        font.family: Appearance.font.family.numbers
+                                        font.weight: Font.DemiBold
+                                        color: blendedColors.colOnPrimary
+                                        text: (LyricsService.lyricsOffsetMs > 0 ? "+" : "") + LyricsService.lyricsOffsetMs + "ms"
+                                    }
+                                }
+                            }
+
+                            StyledToolTip {
+                                text: LyricsService.lyricsOffsetMs !== 0
+                                    ? `Song offset: ${(LyricsService.lyricsOffsetMs > 0 ? "+" : "") + LyricsService.lyricsOffsetMs}ms (saved)\nScroll: ±5ms • Click: Reset to 0ms`
+                                    : "Song offset: 0ms (saved per track)\nScroll: ±5ms"
+                            }
+                        }
+                    }
+
+                    RippleButton {
+                        id: playPauseButton
+                        Layout.alignment: Qt.AlignVCenter
+                        property real size: 32
+                        implicitWidth: size
+                        implicitHeight: size
+                        padding: 0
+                        downAction: () => root.player.togglePlaying();
+
+                        buttonRadius: size / 2
+                        colBackground: root.player?.isPlaying ? blendedColors.colPrimary : blendedColors.colSecondaryContainer
+                        colBackgroundHover: root.player?.isPlaying ? blendedColors.colPrimaryHover : blendedColors.colPrimary
+                        colRipple: root.player?.isPlaying ? blendedColors.colPrimaryActive : blendedColors.colSecondaryContainerActive
+
+                        contentItem: Item {
+                            MaterialSymbol {
+                                anchors.centerIn: parent
+                                iconSize: 20
+                                fill: 1
                                 horizontalAlignment: Text.AlignHCenter
-                                font.pixelSize: Appearance.font.pixelSize.smaller
-                                font.family: Appearance.font.family.numbers
-                                font.weight: Font.Medium
-                                color: offsetLabelMouse.containsMouse
-                                    ? blendedColors.colPrimary
-                                    : (LyricsService.lyricsOffsetMs !== 0 ? blendedColors.colPrimary : blendedColors.colSubtext)
-                                text: LyricsService.lyricsOffsetMs === 0 ? "0ms" : ((LyricsService.lyricsOffsetMs > 0 ? "+" : "") + LyricsService.lyricsOffsetMs + "ms")
+                                verticalAlignment: Text.AlignVCenter
+                                color: {
+                                    if (root.player?.isPlaying) {
+                                        return blendedColors.colOnPrimary;
+                                    } else {
+                                        return playPauseButton.hovered ? blendedColors.colOnPrimary : blendedColors.colOnSecondaryContainer;
+                                    }
+                                }
+                                text: root.player?.isPlaying ? "pause" : "play_arrow"
 
                                 Behavior on color {
                                     animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
                                 }
-
-                                MouseArea {
-                                    id: offsetLabelMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: LyricsService.resetLyricsOffset()
-                                }
-                            }
-
-                            RippleButton {
-                                id: offsetPlusBtn
-                                implicitWidth: 20
-                                implicitHeight: 20
-                                buttonRadius: 10
-                                colBackground: "transparent"
-                                colBackgroundHover: ColorUtils.applyAlpha(blendedColors.colPrimary, 0.22)
-                                colRipple: ColorUtils.applyAlpha(blendedColors.colPrimary, 0.35)
-                                downAction: () => LyricsService.adjustLyricsOffset(50)
-                                contentItem: MaterialSymbol {
-                                    anchors.centerIn: parent
-                                    text: "add"
-                                    iconSize: 15
-                                    fill: 1
-                                    color: offsetPlusBtn.hovered
-                                        ? blendedColors.colPrimary
-                                        : (LyricsService.lyricsOffsetMs !== 0 ? blendedColors.colPrimary : blendedColors.colOnLayer0)
-
-                                    Behavior on color {
-                                        animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
-                                    }
-                                }
                             }
                         }
+                    }
+                }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            acceptedButtons: Qt.RightButton | Qt.MiddleButton
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: (mouse) => {
-                                if (mouse.button === Qt.RightButton || mouse.button === Qt.MiddleButton) {
-                                    LyricsService.resetLyricsOffset();
-                                }
+                // Full-width artist / album row spanning beneath the title
+                Item {
+                    id: artistMarqueeContainer
+                    Layout.fillWidth: true
+                    implicitHeight: trackArtistText.implicitHeight
+                    clip: true
+
+                    readonly property bool isOverflowing: width > 0 && trackArtistText.implicitWidth > width + 5
+                    readonly property string rawSubtitle: {
+                        let artist = MprisController.getPlayerArtists(root.player);
+                        let album = root.player?.trackAlbum || "";
+                        let title = root.player?.trackTitle || "";
+                        if (artist && album && album !== title && !title.includes(album) && artist !== album && !artist.includes(album)) {
+                            return `${artist} • ${album}`;
+                        }
+                        return artist || album;
+                    }
+
+                    onRawSubtitleChanged: {
+                        artistMarqueeAnim.stop();
+                        artistMarqueeRow.x = 0;
+                        if (isOverflowing)
+                            artistMarqueeAnim.start();
+                    }
+                    onIsOverflowingChanged: {
+                        if (!isOverflowing) {
+                            artistMarqueeAnim.stop();
+                            artistMarqueeRow.x = 0;
+                        } else {
+                            artistMarqueeAnim.restart();
+                        }
+                    }
+
+                    Row {
+                        id: artistMarqueeRow
+                        spacing: 40
+                        x: 0
+
+                        StyledText {
+                            id: trackArtistText
+                            font.pixelSize: Appearance.font.pixelSize.smaller
+                            color: blendedColors.colSubtext
+                            textFormat: Text.PlainText
+                            text: artistMarqueeContainer.rawSubtitle
+                        }
+
+                        StyledText {
+                            visible: artistMarqueeContainer.isOverflowing && artistMarqueeAnim.running
+                            font.pixelSize: Appearance.font.pixelSize.smaller
+                            color: blendedColors.colSubtext
+                            textFormat: Text.PlainText
+                            text: artistMarqueeContainer.rawSubtitle
+                        }
+
+                        SequentialAnimation on x {
+                            id: artistMarqueeAnim
+                            running: artistMarqueeContainer.isOverflowing && root.visible
+                            loops: Animation.Infinite
+                            PauseAnimation { duration: 2200 }
+                            NumberAnimation {
+                                from: 0
+                                to: -(trackArtistText.implicitWidth + artistMarqueeRow.spacing)
+                                duration: Math.max(3000, trackArtistText.implicitWidth * 28)
                             }
-                        }
-
-                        HoverHandler {
-                            id: pillHover
-                        }
-
-                        WheelHandler {
-                            onWheel: (event) => {
-                                if (event.angleDelta.y > 0) LyricsService.adjustLyricsOffset(50);
-                                else if (event.angleDelta.y < 0) LyricsService.adjustLyricsOffset(-50);
-                            }
-                        }
-
-                        StyledToolTip {
-                            extraVisibleCondition: pillHover.hovered
-                            alternativeVisibleCondition: pillHover.hovered
-                            text: "Lyrics sync offset (Scroll: ±50ms, click ±0ms to reset)"
                         }
                     }
                 }
@@ -613,27 +727,53 @@ Item { // Player instance
                 StyledText {
                     id: popupNextLyric
                     Layout.fillWidth: true
+                    Layout.preferredWidth: 0
+                    Layout.leftMargin: 12
+                    Layout.rightMargin: 12
                     horizontalAlignment: Text.AlignHCenter
                     font.pixelSize: Appearance.font.pixelSize.small
                     color: LyricsService.lyricLines.length > 0
-                        ? ColorUtils.applyAlpha(blendedColors.colOnLayer0, 0.90)
-                        : ColorUtils.applyAlpha(blendedColors.colSubtext, 0.80)
+                        ? ColorUtils.applyAlpha(blendedColors.colOnLayer0, 0.94)
+                        : blendedColors.colSubtext
                     elide: Text.ElideRight
                     maximumLineCount: 1
-                    text: {
+                    clip: true
+
+                    readonly property int totalWordCount: {
+                        let lines = LyricsService.lyricLines;
+                        if (!lines || lines.length === 0) return 0;
+                        let count = 0;
+                        for (let i = 0; i < lines.length; i++) {
+                            let txt = lines[i]?.text;
+                            if (!txt || txt === "♪") continue;
+                            let tokens = txt.trim().split(/\s+/);
+                            for (let j = 0; j < tokens.length; j++) {
+                                let w = tokens[j].replace(/[\s.,\-_~*+=!?\u2026\u2014\u2013\u2018-\u201f\u2022\u00b7\u266a\u266b\u266c\u3001\u3002\uff0c\uff01\uff1f\u300a\u300b()\[\]{}<>\/\\|:;'"`^#@&%$¡¿]+/g, "");
+                                if (w.length > 0) count++;
+                            }
+                        }
+                        return count;
+                    }
+
+                    readonly property string rawNextLyric: {
                         if (root.player !== LyricsService.activePlayer || !LyricsService.isSupportedPlayer(root.player)) return "";
                         if (LyricsService.lyricLines.length > 0) {
                             if (LyricsService.nextLyricLine && LyricsService.nextLyricLine.length > 0) {
                                 return LyricsService.nextLyricLine;
                             }
+                            let lineCount = LyricsService.lyricLines.length;
+                            let totalLines = lineCount + (lineCount === 1 ? " line" : " lines");
+                            let wordCount = popupNextLyric.totalWordCount;
+                            let totalWords = wordCount > 0 ? (wordCount + (wordCount === 1 ? " word" : " words")) : "";
                             let syncType = LyricsService.hasWordSync ? "Word-synced" : "Line-synced";
-                            let totalLines = LyricsService.lyricLines.length + " lines";
                             let source = LyricsService.lyricsSourceDisplayName;
                             let offsetInfo = LyricsService.lyricsOffsetMs !== 0
                                 ? ((LyricsService.lyricsOffsetMs > 0 ? "+" : "") + LyricsService.lyricsOffsetMs + "ms")
                                 : "";
 
-                            let stats = [totalLines, syncType];
+                            let stats = [totalLines];
+                            if (totalWords) stats.push(totalWords);
+                            stats.push(syncType);
                             if (source) stats.push(source);
                             if (offsetInfo) stats.push(offsetInfo);
 
@@ -642,19 +782,83 @@ Item { // Player instance
                         if (LyricsService.loading) return "Fetching lyrics…";
                         return "No lyrics available";
                     }
+
+                    property string clippedNextLyric: ""
+
+                    function _updateClippedLyric() {
+                        let rawText = popupNextLyric.rawNextLyric;
+                        if (!rawText || infoColumn.width <= 0) {
+                            popupNextLyric.clippedNextLyric = rawText || "";
+                            return;
+                        }
+                        let totalInset = Math.min(72, infoColumn.width * 0.22);
+                        let allocated = Math.max(80, infoColumn.width - totalInset);
+                        let grace = 18; // Allow ~2-3 extra characters rather than awkward truncation
+
+                        lyricMeasure.text = rawText;
+                        if (lyricMeasure.advanceWidth <= allocated + grace) {
+                            popupNextLyric.clippedNextLyric = rawText;
+                            return;
+                        }
+
+                        let words = rawText.trim().split(/\s+/);
+                        if (words.length <= 1) {
+                            popupNextLyric.clippedNextLyric = rawText;
+                            return;
+                        }
+
+                        let lo = 1;
+                        let hi = words.length - 1;
+                        let best = "";
+                        while (lo <= hi) {
+                            let mid = (lo + hi) >> 1;
+                            let candidate = words.slice(0, mid).join(" ").replace(/[\s•,;:\-–—]+$/, "");
+                            if (!candidate) {
+                                lo = mid + 1;
+                                continue;
+                            }
+                            let clipped = candidate + "...";
+                            lyricMeasure.text = clipped;
+                            if (lyricMeasure.advanceWidth <= allocated) {
+                                best = clipped;
+                                lo = mid + 1;
+                            } else {
+                                hi = mid - 1;
+                            }
+                        }
+                        popupNextLyric.clippedNextLyric = best || rawText;
+                    }
+
+                    onRawNextLyricChanged: _updateClippedLyric()
+                    Component.onCompleted: _updateClippedLyric()
+
+                    Connections {
+                        target: infoColumn
+                        function onWidthChanged() {
+                            popupNextLyric._updateClippedLyric();
+                        }
+                    }
+
+                    text: clippedNextLyric
                 }
 
                 RowLayout {
                     id: controlRow
                     Layout.fillWidth: true
-                    implicitHeight: 40
-                    spacing: 8
+                    implicitHeight: 28
+                    spacing: 6
+
+                    TrackChangeButton {
+                        Layout.alignment: Qt.AlignVCenter
+                        iconName: "skip_previous"
+                        downAction: () => root.player?.previous()
+                    }
 
                     StyledText {
                         id: trackTimeLeft
-                        Layout.preferredWidth: 40
+                        Layout.preferredWidth: 36
                         Layout.alignment: Qt.AlignVCenter
-                        horizontalAlignment: Text.AlignLeft
+                        horizontalAlignment: Text.AlignRight
                         font.pixelSize: Appearance.font.pixelSize.small
                         color: blendedColors.colSubtext
                         elide: Text.ElideRight
@@ -678,7 +882,7 @@ Item { // Player instance
                             id: sliderLoader
                             anchors.fill: parent
                             active: (root.player?.canSeek ?? false) && !root.isLive
-                            sourceComponent: StyledSlider { 
+                            sourceComponent: StyledSlider {
                                 configuration: StyledSlider.Configuration.Wavy
                                 highlightColor: blendedColors.colPrimary
                                 trackColor: blendedColors.colSecondaryContainer
@@ -702,7 +906,7 @@ Item { // Player instance
                                 right: parent.right
                             }
                             active: !(root.player?.canSeek ?? false) || root.isLive
-                            sourceComponent: StyledProgressBar { 
+                            sourceComponent: StyledProgressBar {
                                 wavy: root.player?.isPlaying
                                 highlightColor: blendedColors.colPrimary
                                 trackColor: blendedColors.colSecondaryContainer
@@ -713,53 +917,13 @@ Item { // Player instance
 
                     StyledText {
                         id: trackTimeRight
-                        Layout.preferredWidth: 40
+                        Layout.preferredWidth: 36
                         Layout.alignment: Qt.AlignVCenter
-                        horizontalAlignment: Text.AlignRight
+                        horizontalAlignment: Text.AlignLeft
                         font.pixelSize: Appearance.font.pixelSize.small
                         color: blendedColors.colSubtext
                         elide: Text.ElideRight
                         text: root.isLive ? Translation.tr("live") : StringUtils.friendlyTimeForSeconds(root.player?.length)
-                    }
-
-                    TrackChangeButton {
-                        Layout.alignment: Qt.AlignVCenter
-                        iconName: "skip_previous"
-                        downAction: () => root.player?.previous()
-                    }
-
-                    RippleButton {
-                        id: playPauseButton
-                        Layout.alignment: Qt.AlignVCenter
-                        property real size: 40
-                        implicitWidth: size
-                        implicitHeight: size
-                        downAction: () => root.player.togglePlaying();
-
-                        buttonRadius: size / 2
-                        colBackground: root.player?.isPlaying ? blendedColors.colPrimary : blendedColors.colSecondaryContainer
-                        colBackgroundHover: root.player?.isPlaying ? blendedColors.colPrimaryHover : blendedColors.colPrimary
-                        colRipple: root.player?.isPlaying ? blendedColors.colPrimaryActive : blendedColors.colSecondaryContainerActive
-
-                        contentItem: MaterialSymbol {
-                            anchors.centerIn: parent
-                            iconSize: 24
-                            fill: 1
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                            color: {
-                                if (root.player?.isPlaying) {
-                                    return blendedColors.colOnPrimary;
-                                } else {
-                                    return playPauseButton.hovered ? blendedColors.colOnPrimary : blendedColors.colOnSecondaryContainer;
-                                }
-                            }
-                            text: root.player?.isPlaying ? "pause" : "play_arrow"
-
-                            Behavior on color {
-                                animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
-                            }
-                        }
                     }
 
                     TrackChangeButton {
