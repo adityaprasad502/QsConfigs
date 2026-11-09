@@ -339,8 +339,6 @@ Item {
                 id: topBarMarqueeRow
                 spacing: 36
                 x: 0
-                layer.enabled: topBarTextContainer.isOverflowing
-                layer.smooth: true
 
                 StyledText {
                     id: topBarMusicText

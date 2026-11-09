@@ -43,7 +43,7 @@ Item { // Player instance
     property bool downloaded: MprisController.isArtCached(root.artUrl) || (root.artUrl.length > 0 && root.artUrl.startsWith("file://"))
     readonly property bool isLive: MprisController.isLive(root.player)
     property list<real> visualizerPoints: []
-    property real maxVisualizerValue: 850 // Max value in the data points
+    property real maxVisualizerValue: 800 // Max value in the data points
     property int visualizerSmoothing: 1 // Number of points to average for smoothing
     property real radius
     property real lastKnownPosition: 0
@@ -285,19 +285,28 @@ Item { // Player instance
                 }
             }
 
-            // Subtle ambient wave visualizer dancing in the lower backdrop
+            // Ambient wave visualizer dancing in the lower backdrop
             WaveVisualizer {
                 id: visualizerCanvas
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                height: parent.height * 0.55
+                height: parent.height * 0.62
+                layer.enabled: false
+                smoothCurve: true
                 live: root.player?.isPlaying
-                opacity: 0.26
+                visible: opacity > 0
+                opacity: root.player?.isPlaying ? 1.0 : 0.0
+                Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
                 points: root.visualizerPoints
                 maxVisualizerValue: root.maxVisualizerValue
+                nonLinearCurve: 0.56
                 smoothing: root.visualizerSmoothing
                 color: blendedColors.colPrimary
+                fillOpacity: 0.36
+                bottomFillOpacity: 0.13
+                strokeOpacity: 0.42
+                strokeWidth: 1.5
             }
         }
 
