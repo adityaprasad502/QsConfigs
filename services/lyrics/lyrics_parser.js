@@ -270,6 +270,25 @@ function _tokenize(synced, offsetSec) {
             }
 
             let words = _parseWords(content, timeSec, offsetSec);
+            if (words.length > 0) {
+                let inSpace = true;
+                for (let w = 0; w < words.length; w++) {
+                    let s = words[w].text.replace(/\s+/g, " ");
+                    if (inSpace && s.charCodeAt(0) === 32) {
+                        s = s.substring(1);
+                    }
+                    words[w].text = s;
+                    if (s.length > 0) {
+                        inSpace = s.charCodeAt(s.length - 1) === 32;
+                    }
+                }
+                for (let w = words.length - 1; w >= 0; w--) {
+                    let s = words[w].text.replace(/ +$/, "");
+                    words[w].text = s;
+                    if (s.length > 0) break;
+                }
+                words = words.filter(function(w) { return w.text.length > 0; });
+            }
             let isWordSynced = words.length > 0;
 
             let headerEnd = lineDuration > 0 ? timeSec + lineDuration : 0;

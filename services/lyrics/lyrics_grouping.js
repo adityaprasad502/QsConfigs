@@ -187,9 +187,9 @@ function computeGroupBounds(g, lines, metricsRev, bulletCol, colLitHex, colBgLit
         styledMetrics.text = prefix;
         let endX = styledMetrics.implicitWidth;
 
-        // Generous padding into bullet separator whitespace to guarantee zero clipping of edge glyphs
-        let clipStart = (i === 0) ? 0.0 : Math.max(0.0, startX - 2.5);
-        let clipEnd = (i === count - 1) ? totalW : Math.min(totalW, endX + 2.0);
+        // Keep padding inside bullet separator whitespace to preserve edge glyphs without leaking into neighbors
+        let clipStart = (i === 0) ? 0.0 : Math.max(0.0, startX - 1.5);
+        let clipEnd = (i === count - 1) ? totalW : Math.min(totalW, endX + 1.2);
 
         bounds.push({
             startX: startX,

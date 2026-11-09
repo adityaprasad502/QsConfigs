@@ -356,7 +356,8 @@ Item {
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
                         x: 0
-                        width: Math.min(parent.implicitWidth, LyricsService.currentPastWidth)
+                        width: Math.min(parent.implicitWidth,
+                            Math.max(0, LyricsService.currentPastWidth > 2.0 ? LyricsService.currentPastWidth - 1.2 : LyricsService.currentPastWidth))
                         clip: true
 
                         StyledText {
@@ -373,13 +374,15 @@ Item {
 
                     Item {
                         id: lyricClipOverlay
+                        readonly property real rawStartX: LyricsService.currentLeadStartX
+                        readonly property real snappedX: Math.floor(rawStartX)
                         visible: root.hasLyrics && LyricsService.hasWordSync
                             && LyricsService.currentLeadWidth > 0 && LyricsService.currentLeadProgress > 0
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
-                        x: LyricsService.currentLeadStartX
+                        x: snappedX
                         width: Math.min(parent.implicitWidth - x,
-                            Math.max(0, LyricsService.currentLeadWidth * LyricsService.currentLeadProgress))
+                            Math.max(0, (rawStartX - x) + LyricsService.currentLeadWidth * LyricsService.currentLeadProgress))
                         clip: true
                         layer.enabled: true
                         layer.smooth: true
@@ -423,13 +426,15 @@ Item {
 
                     Item {
                         id: lyricBgClipOverlay
+                        readonly property real rawStartX: LyricsService.currentBgStartX
+                        readonly property real snappedX: Math.floor(rawStartX)
                         visible: root.hasLyrics && LyricsService.hasWordSync && LyricsService.currentLineHasBg
                             && LyricsService.currentBgWidth > 0 && LyricsService.currentBgProgress > 0
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
-                        x: LyricsService.currentBgStartX
+                        x: snappedX
                         width: Math.min(parent.implicitWidth - x,
-                            Math.max(0, LyricsService.currentBgWidth * LyricsService.currentBgProgress))
+                            Math.max(0, (rawStartX - x) + LyricsService.currentBgWidth * LyricsService.currentBgProgress))
                         clip: true
                         layer.enabled: true
                         layer.smooth: true

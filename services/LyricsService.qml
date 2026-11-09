@@ -932,7 +932,8 @@ Singleton {
         id: lyricMetrics
         font.family: Appearance?.font?.family?.main ?? ""
         font.pixelSize: Appearance?.font?.pixelSize?.small ?? 15
-        font.variableAxes: Appearance?.font?.variableAxes?.main ?? ({})
+        font.weight: Font.Normal
+        font.variableAxes: ({ "wght": 400 })
     }
 
     Text {
@@ -942,7 +943,8 @@ Singleton {
         font.hintingPreference: Font.PreferDefaultHinting
         font.family: Appearance?.font?.family?.main ?? ""
         font.pixelSize: Appearance?.font?.pixelSize?.small ?? 15
-        font.variableAxes: Appearance?.font?.variableAxes?.main ?? ({})
+        font.weight: Font.Normal
+        font.variableAxes: ({ "wght": 400 })
         textFormat: Text.StyledText
     }
 

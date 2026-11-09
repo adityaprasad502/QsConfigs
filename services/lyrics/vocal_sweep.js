@@ -64,6 +64,8 @@ function computeBounds(line, measureFn) {
             cx.push(j === n - 1 ? measureFn(prefix + text) : measureFn(prefix + acc));
         }
         let endX = n > 0 ? cx[n - 1] : prevW;
+        let trimmed = text.replace(/\s+$/, "");
+        let visEndX = trimmed.length < text.length ? measureFn(prefix + trimmed) : endX;
         let wordW = endX - prevW;
 
         // Balance character timing between glyph index and visual width proportion
@@ -74,7 +76,7 @@ function computeBounds(line, measureFn) {
         }
 
         prefix += text;
-        bounds.push({ startX: prevW, endX: endX, cx: cx, ct: ct });
+        bounds.push({ startX: prevW, endX: endX, visEndX: visEndX, cx: cx, ct: ct });
         prevW = endX;
     }
     line._wordBounds = bounds;
@@ -100,7 +102,20 @@ function assignTrackRegions(line) {
             tb.push(bounds[idx[i]]);
         }
         let sx = tb[0].startX;
-        let ex = tb[tb.length - 1].endX;
+        let firstWordIdx = idx[0];
+        if (firstWordIdx > 0 && /\s$/.test(words[firstWordIdx - 1].text)) {
+            let prevVisEnd = bounds[firstWordIdx - 1].visEndX !== undefined ? bounds[firstWordIdx - 1].visEndX : bounds[firstWordIdx - 1].endX;
+            let gap = sx - prevVisEnd;
+            if (gap > 0.5) {
+                sx = Math.max(prevVisEnd + gap * 0.35, sx - Math.min(1.6, gap * 0.45));
+            }
+        }
+        let lastBound = tb[tb.length - 1];
+        let ex = lastBound.endX;
+        if (lastBound.visEndX !== undefined && lastBound.visEndX < ex) {
+            let trailGap = ex - lastBound.visEndX;
+            ex = lastBound.visEndX + Math.min(0.8, trailGap * 0.25);
+        }
         return {
             words: tw,
             bounds: tb,
@@ -212,7 +227,14 @@ function sweepWordSubset(words, bounds, totalW, baseStartX, currentSec, lineRefK
     let b = bounds[i];
     let relStartX = Math.max(0, b.startX - baseStartX);
     let relEndX = Math.max(relStartX, b.endX - baseStartX);
-    if (currentSec <= w.start) return Math.max(0.0, Math.min(1.0, relStartX / totalW));
+    if (currentSec <= w.start) {
+        let pauseX = b.startX;
+        if (i > 0 && (w.start - words[i - 1].end) > 0.08 && bounds[i - 1].visEndX !== undefined && bounds[i - 1].visEndX < pauseX) {
+            let prevEnd = bounds[i - 1].visEndX;
+            pauseX = prevEnd + Math.min(0.8, (pauseX - prevEnd) * 0.25);
+        }
+        return Math.max(0.0, Math.min(1.0, (pauseX - baseStartX) / totalW));
+    }
 
     let dur = Math.max(0.001, w.end - w.start);
     let rawT = Math.max(0.0, Math.min(1.0, (currentSec - w.start) / dur));
