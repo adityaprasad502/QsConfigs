@@ -72,4 +72,7 @@ NestableObject {
     onGroupChanged: {
         updateWorkspaceOccupied();
     }
+    onShownCountChanged: {
+        updateWorkspaceOccupied();
+    }
 }

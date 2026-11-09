@@ -155,7 +155,7 @@ RippleButton {
         Component {
             id: iconImageComponent
             IconImage {
-                source: Quickshell.iconPath(root.iconName, "image-missing")
+                source: AppSearch.resolveIconSource(root.iconName, "image-missing")
                 width: 35
                 height: 35
             }
